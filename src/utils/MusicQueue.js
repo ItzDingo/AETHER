@@ -13,13 +13,23 @@ const { updatePanel } = require('../utils/panelManager');
 const ffmpegPath = require('ffmpeg-static');
 
 function getYtdlpBinary() {
+  if (process.env.RAILWAY_ENVIRONMENT) {
+    return 'yt-dlp';
+  }
+
   try {
     const ytdl = require('youtube-dl-exec');
     const fs = require('fs');
-    if (ytdl.constants && ytdl.constants.YOUTUBE_DL_PATH && fs.existsSync(ytdl.constants.YOUTUBE_DL_PATH)) {
+
+    if (
+      ytdl.constants &&
+      ytdl.constants.YOUTUBE_DL_PATH &&
+      fs.existsSync(ytdl.constants.YOUTUBE_DL_PATH)
+    ) {
       return ytdl.constants.YOUTUBE_DL_PATH;
     }
   } catch {}
+
   return 'yt-dlp';
 }
 
@@ -123,7 +133,7 @@ class MusicQueue {
       }
       // If it's stuck in a bad state, destroy it and recreate
       console.log(`[Voice] Existing connection in "${existing.state.status}" state, destroying and reconnecting...`);
-      try { existing.destroy(); } catch {}
+      try { existing.destroy(); } catch { }
     }
 
     const maxAttempts = 2;
@@ -164,7 +174,7 @@ class MusicQueue {
         console.error(`[MusicQueue] Voice connection attempt ${attempt} failed:`, err.message);
 
         // Destroy the broken connection so it doesn't keep cycling
-        try { this.connection.destroy(); } catch {}
+        try { this.connection.destroy(); } catch { }
         this.connection = null;
 
         if (attempt < maxAttempts) {
@@ -282,13 +292,13 @@ class MusicQueue {
       this.current = song;
       this.isPlaying = true;
       this.clearAutoLeaveTimer();
-      
+
       if (seekTime === 0) {
         this.currentSeekTime = 0;
       } else {
         this.currentSeekTime = seekTime;
       }
-      
+
       await updatePanel(this).catch(() => { });
 
       const videoUrl = song.videoId
@@ -330,7 +340,7 @@ class MusicQueue {
       // disrupting the freshly established audio pipe.
       setTimeout(() => {
         const { updateBotPresenceAndVoiceStatus } = require('./presenceManager');
-        updateBotPresenceAndVoiceStatus(this, song).catch(() => {});
+        updateBotPresenceAndVoiceStatus(this, song).catch(() => { });
       }, 3000);
 
     } catch (err) {
@@ -352,7 +362,7 @@ class MusicQueue {
     this.current = null;
 
     const { updateBotPresenceAndVoiceStatus } = require('./presenceManager');
-    updateBotPresenceAndVoiceStatus(this, null).catch(() => {});
+    updateBotPresenceAndVoiceStatus(this, null).catch(() => { });
 
     if (this.songs.length > 0) {
       const next = this.songs.shift();
@@ -382,7 +392,7 @@ class MusicQueue {
     this.current = null;
 
     const { updateBotPresenceAndVoiceStatus } = require('./presenceManager');
-    updateBotPresenceAndVoiceStatus(this, null).catch(() => {});
+    updateBotPresenceAndVoiceStatus(this, null).catch(() => { });
 
     this.startAutoLeaveTimer();
   }
@@ -453,7 +463,7 @@ class MusicQueue {
     this.player.stop(true);
 
     const { updateBotPresenceAndVoiceStatus } = require('./presenceManager');
-    updateBotPresenceAndVoiceStatus(this, null).catch(() => {});
+    updateBotPresenceAndVoiceStatus(this, null).catch(() => { });
 
     if (this.connection) {
       try {
