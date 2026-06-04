@@ -239,15 +239,18 @@ class MusicQueue {
     const cookiesEnv = process.env.YOUTUBE_COOKIES;
     let cookiesPath = null;
 
-    if (cookiesEnv) {
+    if (cookiesEnv && cookiesEnv.trim()) {
       // Write cookies from env var to a temp file
       cookiesPath = path.join(os.tmpdir(), `yt-cookies-${Date.now()}.txt`);
       try {
         fs.writeFileSync(cookiesPath, cookiesEnv, 'utf8');
+        const fileSize = fs.statSync(cookiesPath).size;
+        console.log(`[MusicQueue] Wrote cookies to ${cookiesPath} (${fileSize} bytes)`);
         args.push('--cookies', cookiesPath);
         console.log('[MusicQueue] Using cookies from YOUTUBE_COOKIES environment variable');
       } catch (err) {
-        console.warn('[MusicQueue] Failed to write cookies from env var:', err.message);
+        console.error('[MusicQueue] Failed to write cookies from env var:', err.message);
+        cookiesPath = null;
       }
     } else {
       // Fallback to local cookies file
@@ -256,11 +259,13 @@ class MusicQueue {
         args.push('--cookies', localCookiesPath);
         console.log('[MusicQueue] Using cookies from local file');
       } else {
-        console.warn('[MusicQueue] No cookies found (YOUTUBE_COOKIES env var or temp/cookies.txt)');
+        console.warn('[MusicQueue] No cookies found (YOUTUBE_COOKIES env var is empty or temp/cookies.txt missing)');
       }
     }
 
     args.push('-g', videoUrl);
+
+    console.log(`[MusicQueue] Running yt-dlp with args: ${args.join(' ')}`);
 
     const ytdlp = spawn(getYtdlpBinary(), args, {
       windowsHide: true,
@@ -269,7 +274,12 @@ class MusicQueue {
     this.activeProcesses.push(ytdlp);
 
     try {
-      const { stdout } = await waitForProcessOutput(ytdlp);
+      const { stdout, stderr } = await waitForProcessOutput(ytdlp);
+      
+      if (stderr) {
+        console.log(`[MusicQueue] yt-dlp stderr: ${stderr.substring(0, 200)}`);
+      }
+      
       const directUrl = stdout
         .split(/\r?\n/)
         .map((line) => line.trim())
