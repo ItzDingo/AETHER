@@ -57,11 +57,19 @@ function getCookieString() {
     const cookies = [];
 
     for (const line of lines) {
-      if (line.startsWith('#') || !line.trim()) continue;
+      const trimmed = line.trim();
+      if (trimmed.startsWith('#') || !trimmed) continue;
       const parts = line.split('\t');
       if (parts.length >= 7) {
         const name = parts[5].trim();
         const value = parts[6].trim();
+
+        // Skip cookies with control/invalid characters to prevent undici/fetch crashing
+        if (/[\x00-\x1F\x7F]/.test(name) || /[\x00-\x1F\x7F]/.test(value)) {
+          console.warn(`[ytResolver] Skipping cookie "${name}" due to control/invalid characters.`);
+          continue;
+        }
+
         cookies.push(`${name}=${value}`);
       }
     }
@@ -89,7 +97,14 @@ async function getInnertube() {
           console.log('[ytResolver] Initializing youtubei.js WITHOUT cookies');
         }
 
-        return withTimeout(Innertube.create(config), 15000, 'Innertube.create');
+        return withTimeout(Innertube.create(config), 15000, 'Innertube.create')
+          .catch(async (err) => {
+            if (config.cookie) {
+              console.error('[ytResolver] Failed to initialize Innertube WITH cookies, retrying WITHOUT cookies...', err.message);
+              return withTimeout(Innertube.create({}), 15000, 'Innertube.create (fallback)');
+            }
+            throw err;
+          });
       })
       .catch((err) => {
         innertubePromise = null;

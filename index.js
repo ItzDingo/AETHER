@@ -13,11 +13,16 @@ if (process.env.YOUTUBE_COOKIES) {
     const cookiesPath = path.join(tempDir, 'cookies.txt');
     let cookiesContent = process.env.YOUTUBE_COOKIES.trim();
     
+    // Check if YOUTUBE_COOKIES looks like a Base64 string
+    // A base64 string shouldn't start with '#' and should only contain base64 characters
+    const cleanContent = cookiesContent.replace(/\s+/g, '');
+    const isBase64 = !cookiesContent.startsWith('#') && /^[A-Za-z0-9+/=]+$/.test(cleanContent);
     
-    if (!cookiesContent.startsWith('# Netscape HTTP Cookie File')) {
-      
-      const cleanBase64 = cookiesContent.replace(/\s+/g, '');
-      cookiesContent = Buffer.from(cleanBase64, 'base64').toString('utf-8');
+    if (isBase64) {
+      console.log('[Runner] YOUTUBE_COOKIES environment variable detected as Base64 encoded. Decoding...');
+      cookiesContent = Buffer.from(cleanContent, 'base64').toString('utf-8');
+    } else {
+      console.log('[Runner] YOUTUBE_COOKIES environment variable detected as raw Netscape text format.');
     }
     
     fs.writeFileSync(cookiesPath, cookiesContent, 'utf-8');
