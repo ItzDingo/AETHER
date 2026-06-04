@@ -1,7 +1,22 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const ffmpegPath = require('ffmpeg-static');
+function getFfmpegPath() {
+  const fs = require('fs');
+  if (fs.existsSync('/usr/bin/ffmpeg')) {
+    return '/usr/bin/ffmpeg';
+  }
+  if (fs.existsSync('/usr/local/bin/ffmpeg')) {
+    return '/usr/local/bin/ffmpeg';
+  }
+  try {
+    const staticFfmpeg = require('ffmpeg-static');
+    if (staticFfmpeg && fs.existsSync(staticFfmpeg)) {
+      return staticFfmpeg;
+    }
+  } catch {}
+  return 'ffmpeg';
+}
 
 function getYtdlpBinary() {
   const fs = require('fs');
@@ -58,7 +73,7 @@ async function downloadMp3(songUrl, songTitle) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
     const outputPath = path.join(tempDir, `${safeTitle}-${Date.now()}.mp3`);
-    const ffmpegDir = path.dirname(ffmpegPath);
+
 
     console.log(`[downloader] Downloading and converting to MP3: ${songUrl}`);
     console.log(`[downloader] Output path: ${outputPath}`);
@@ -69,7 +84,7 @@ async function downloadMp3(songUrl, songTitle) {
       '-x',
       '--audio-format', 'mp3',
       '--audio-quality', '5',
-      '--ffmpeg-location', ffmpegDir,
+      '--ffmpeg-location', getFfmpegPath(),
     ];
 
     if (fs.existsSync(cookiesPath)) {

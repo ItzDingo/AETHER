@@ -10,7 +10,23 @@ const {
   StreamType,
 } = require('@discordjs/voice');
 const { updatePanel } = require('../utils/panelManager');
-const ffmpegPath = require('ffmpeg-static');
+
+function getFfmpegPath() {
+  const fs = require('fs');
+  if (fs.existsSync('/usr/bin/ffmpeg')) {
+    return '/usr/bin/ffmpeg';
+  }
+  if (fs.existsSync('/usr/local/bin/ffmpeg')) {
+    return '/usr/local/bin/ffmpeg';
+  }
+  try {
+    const staticFfmpeg = require('ffmpeg-static');
+    if (staticFfmpeg && fs.existsSync(staticFfmpeg)) {
+      return staticFfmpeg;
+    }
+  } catch {}
+  return 'ffmpeg';
+}
 
 function getYtdlpBinary() {
   const fs = require('fs');
@@ -322,7 +338,7 @@ class MusicQueue {
       const directUrl = await this.getDirectAudioUrl(videoUrl, song.videoId);
       console.log(`[MusicQueue] Streaming via ffmpeg from direct audio URL (seekTime: ${seekTime}ms)`);
 
-      ffmpeg = spawn(ffmpegPath, this._buildFfmpegArgs(directUrl, seekTime), {
+      ffmpeg = spawn(getFfmpegPath(), this._buildFfmpegArgs(directUrl, seekTime), {
         windowsHide: true,
       });
 
