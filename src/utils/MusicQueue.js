@@ -218,7 +218,7 @@ class MusicQueue {
 
     const args = [
       '-f',
-      'bestaudio',
+      'bestaudio/best',
       '--no-playlist',
       '--no-warnings',
       '--no-check-certificates',
