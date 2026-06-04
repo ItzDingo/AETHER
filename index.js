@@ -26,6 +26,8 @@ if (process.env.YOUTUBE_COOKIES) {
   } catch (err) {
     console.error('[Runner] Error writing YouTube cookies file:', err.message);
   }
+} else {
+  console.log('[Runner] WARNING: YOUTUBE_COOKIES environment variable is not defined!');
 }
 
 let restartCount = 0;
