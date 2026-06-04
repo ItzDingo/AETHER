@@ -1,8 +1,11 @@
-
+const { initOAuth, hasOAuthCredentials } = require('./ytOAuth');
 
 let innertubePromise = null;
 let guestInnertubePromise = null;
 
+// Use 'ANDROID' client type because it successfully returns direct stream URLs without cipher issues,
+// whereas WEB/YTMUSIC clients hide the URL or fail to provide direct URLs on newer YouTube versions.
+const DEFAULT_CLIENT_TYPE = 'ANDROID';
 
 const songCache = new Map();
 const SONG_CACHE_TTL = 10 * 60 * 1000;
@@ -67,7 +70,6 @@ function getCookieString() {
 
         // Skip cookies with control/invalid characters to prevent undici/fetch crashing
         if (/[\x00-\x1F\x7F]/.test(name) || /[\x00-\x1F\x7F]/.test(value)) {
-          console.warn(`[ytResolver] Skipping cookie "${name}" due to control/invalid characters.`);
           continue;
         }
 
@@ -83,34 +85,47 @@ function getCookieString() {
 
 async function getInnertube() {
   if (!innertubePromise) {
-    innertubePromise = import('youtubei.js')
-      .then(({ Innertube, Log }) => {
-        if (Log && typeof Log.setLevel === 'function') {
-          Log.setLevel(1);
-        }
-        
-        const cookie = getCookieString();
-        const config = {};
-        if (cookie) {
-          console.log(`[ytResolver] Initializing youtubei.js with cookies (length: ${cookie.length})`);
-          config.cookie = cookie;
-        } else {
-          console.log('[ytResolver] Initializing youtubei.js WITHOUT cookies');
-        }
+    innertubePromise = (async () => {
+      const { Innertube, Log } = await import('youtubei.js');
+      if (Log && typeof Log.setLevel === 'function') {
+        Log.setLevel(1);
+      }
 
-        return withTimeout(Innertube.create(config), 15000, 'Innertube.create')
-          .catch(async (err) => {
-            if (config.cookie) {
-              console.error('[ytResolver] Failed to initialize Innertube WITH cookies, retrying WITHOUT cookies...', err.message);
-              return withTimeout(Innertube.create({}), 15000, 'Innertube.create (fallback)');
-            }
-            throw err;
-          });
-      })
-      .catch((err) => {
-        innertubePromise = null;
-        throw err;
-      });
+      // Strategy 1: Try OAuth2 (persistent, never expires)
+      if (hasOAuthCredentials()) {
+        console.log(`[ytResolver] Initializing youtubei.js with OAuth2 using client: ${DEFAULT_CLIENT_TYPE}...`);
+        try {
+          const yt = await withTimeout(Innertube.create({ client_type: DEFAULT_CLIENT_TYPE }), 15000, 'Innertube.create');
+          const success = await initOAuth(yt);
+          if (success) {
+            console.log('[ytResolver] ✅ youtubei.js initialized with OAuth2 successfully.');
+            return yt;
+          }
+          console.warn('[ytResolver] OAuth2 sign-in returned false. Trying fallbacks...');
+        } catch (err) {
+          console.error('[ytResolver] OAuth2 initialization failed:', err.message);
+        }
+      }
+
+      // Strategy 2: Try cookies (legacy fallback)
+      const cookie = getCookieString();
+      if (cookie) {
+        console.log(`[ytResolver] Initializing youtubei.js with cookies (length: ${cookie.length}) using client: ${DEFAULT_CLIENT_TYPE}`);
+        try {
+          const yt = await withTimeout(Innertube.create({ cookie, client_type: DEFAULT_CLIENT_TYPE }), 15000, 'Innertube.create (cookies)');
+          return yt;
+        } catch (err) {
+          console.error('[ytResolver] Cookie-based initialization failed:', err.message);
+        }
+      }
+
+      // Strategy 3: Guest mode (no auth)
+      console.log(`[ytResolver] Initializing youtubei.js in guest mode (no auth) using client: ${DEFAULT_CLIENT_TYPE}.`);
+      return withTimeout(Innertube.create({ client_type: DEFAULT_CLIENT_TYPE }), 15000, 'Innertube.create (guest)');
+    })().catch((err) => {
+      innertubePromise = null;
+      throw err;
+    });
   }
 
   return innertubePromise;
@@ -123,8 +138,8 @@ async function getGuestInnertube() {
         if (Log && typeof Log.setLevel === 'function') {
           Log.setLevel(1);
         }
-        console.log('[ytResolver] Initializing guest youtubei.js instance (no cookies)');
-        return withTimeout(Innertube.create({}), 15000, 'Innertube.create (guest)');
+        console.log(`[ytResolver] Initializing guest youtubei.js instance (no cookies) using client: ${DEFAULT_CLIENT_TYPE}`);
+        return withTimeout(Innertube.create({ client_type: DEFAULT_CLIENT_TYPE }), 15000, 'Innertube.create (guest)');
       })
       .catch((err) => {
         guestInnertubePromise = null;
@@ -156,6 +171,40 @@ function extractVideoId(input) {
 function pickFirst(...values) {
   for (const value of values) {
     if (value !== undefined && value !== null && value !== '') return value;
+  }
+  return null;
+}
+
+/**
+ * Helper function to retrieve the direct stream URL for a given video ID.
+ * Resolves the URL using an authenticated or guest Innertube instance.
+ */
+async function getDirectStreamUrl(videoId) {
+  try {
+    const yt = await getInnertube();
+    let info = await withTimeout(yt.getBasicInfo(videoId), 10000, 'getBasicInfo').catch(() => null);
+
+    if (!info && getCookieString()) {
+      console.log(`[ytResolver] getBasicInfo failed with authenticated instance for ${videoId}. Retrying with guest...`);
+      const ytGuest = await getGuestInnertube();
+      info = await withTimeout(ytGuest.getBasicInfo(videoId), 10000, 'getBasicInfo (guest)').catch(() => null);
+    }
+
+    if (info) {
+      const format = info.chooseFormat({ type: 'audio', quality: 'best' });
+      if (format) {
+        if (format.url) {
+          return format.url;
+        }
+        if (format.signature_cipher || format.cipher) {
+          console.log(`[ytResolver] Stream is ciphered for ${videoId}. Deciphering...`);
+          const url = await format.decipher(yt.session.player);
+          if (url) return url;
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[ytResolver] Failed to get direct stream URL for ${videoId}:`, err.message);
   }
   return null;
 }
@@ -462,7 +511,7 @@ async function resolveSong(input) {
 
   if (urlResult) {
     const { id } = urlResult;
-    
+
     const cached = getCachedSong(id);
     if (cached) {
       console.log(`[ytResolver] Cache hit for URL ${id}`);
@@ -479,4 +528,4 @@ async function resolveSong(input) {
   return await searchYouTubeMusic(input);
 }
 
-module.exports = { resolveSong, formatDuration };
+module.exports = { resolveSong, formatDuration, getDirectStreamUrl, getInnertube, extractVideoId };

@@ -4,6 +4,38 @@ const fs = require('fs');
 require('dotenv').config();
 
 
+// --- OAuth2 Credentials (preferred, persistent) ---
+if (process.env.YOUTUBE_OAUTH_CREDENTIALS) {
+  try {
+    const tempDir = path.join(__dirname, 'temp');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    const oauthPath = path.join(tempDir, 'oauth_credentials.json');
+    let oauthContent = process.env.YOUTUBE_OAUTH_CREDENTIALS.trim();
+
+    // Check if it's base64 encoded (JSON starts with '{', base64 won't)
+    if (!oauthContent.startsWith('{')) {
+      oauthContent = Buffer.from(oauthContent, 'base64').toString('utf-8');
+    }
+
+    // Validate it's valid JSON with expected fields
+    const parsed = JSON.parse(oauthContent);
+    if (parsed.access_token) {
+      fs.writeFileSync(oauthPath, JSON.stringify(parsed, null, 2), 'utf-8');
+      console.log('[Runner] Successfully loaded YouTube OAuth2 credentials.');
+    } else {
+      console.warn('[Runner] YOUTUBE_OAUTH_CREDENTIALS is present but missing access_token.');
+    }
+  } catch (err) {
+    console.error('[Runner] Error loading YouTube OAuth2 credentials:', err.message);
+  }
+} else {
+  console.log('[Runner] YOUTUBE_OAUTH_CREDENTIALS not set. OAuth2 not configured.');
+  console.log('[Runner] Run "node setup_oauth.js" to set up persistent authentication.');
+}
+
+// --- Legacy Cookie Loading (fallback) ---
 if (process.env.YOUTUBE_COOKIES) {
   try {
     const tempDir = path.join(__dirname, 'temp');
@@ -12,27 +44,19 @@ if (process.env.YOUTUBE_COOKIES) {
     }
     const cookiesPath = path.join(tempDir, 'cookies.txt');
     let cookiesContent = process.env.YOUTUBE_COOKIES.trim();
-    
-    // Check if YOUTUBE_COOKIES looks like a Base64 string
-    // A base64 string shouldn't start with '#' and should only contain base64 characters
+
     const cleanContent = cookiesContent.replace(/\s+/g, '');
     const isBase64 = !cookiesContent.startsWith('#') && /^[A-Za-z0-9+/=]+$/.test(cleanContent);
-    
+
     if (isBase64) {
-      console.log('[Runner] YOUTUBE_COOKIES environment variable detected as Base64 encoded. Decoding...');
       cookiesContent = Buffer.from(cleanContent, 'base64').toString('utf-8');
-    } else {
-      console.log('[Runner] YOUTUBE_COOKIES environment variable detected as raw Netscape text format.');
     }
-    
+
     fs.writeFileSync(cookiesPath, cookiesContent, 'utf-8');
-    const firstLine = cookiesContent.split('\n')[0] || '';
-    console.log(`[Runner] Successfully loaded YouTube cookies. File starts with: "${firstLine.substring(0, 100)}"`);
+    console.log('[Runner] YouTube cookies loaded (legacy fallback).');
   } catch (err) {
     console.error('[Runner] Error writing YouTube cookies file:', err.message);
   }
-} else {
-  console.log('[Runner] WARNING: YOUTUBE_COOKIES environment variable is not defined!');
 }
 
 let restartCount = 0;

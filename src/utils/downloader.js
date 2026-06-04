@@ -1,6 +1,8 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { getDirectStreamUrl, extractVideoId } = require('./ytResolver');
+
 function getFfmpegPath() {
   const fs = require('fs');
   if (fs.existsSync('/usr/bin/ffmpeg')) {
@@ -74,11 +76,29 @@ async function downloadMp3(songUrl, songTitle) {
     }
     const outputPath = path.join(tempDir, `${safeTitle}-${Date.now()}.mp3`);
 
+    let downloadUrl = songUrl;
+    let usingDirectUrl = false;
 
-    console.log(`[downloader] Downloading and converting to MP3: ${songUrl}`);
+    const urlResult = extractVideoId(songUrl);
+    if (urlResult) {
+      try {
+        console.log(`[downloader] Resolving direct stream URL via youtubei.js for ${urlResult.id}...`);
+        const directUrl = await getDirectStreamUrl(urlResult.id);
+        if (directUrl) {
+          downloadUrl = directUrl;
+          usingDirectUrl = true;
+          console.log(`[downloader] Successfully resolved stream URL via youtubei.js`);
+        } else {
+          console.log(`[downloader] youtubei.js returned no stream URL, falling back to YouTube URL.`);
+        }
+      } catch (err) {
+        console.warn(`[downloader] youtubei.js resolution failed:`, err.message);
+      }
+    }
+
+    console.log(`[downloader] Downloading and converting to MP3: ${usingDirectUrl ? '(direct stream URL)' : songUrl}`);
     console.log(`[downloader] Output path: ${outputPath}`);
 
-    const cookiesPath = path.join(__dirname, '..', '..', 'temp', 'cookies.txt');
     const args = [
       '-f', 'bestaudio/best',
       '-x',
@@ -89,11 +109,14 @@ async function downloadMp3(songUrl, songTitle) {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     ];
 
-    if (fs.existsSync(cookiesPath)) {
-      console.log(`[downloader] Executing yt-dlp WITH cookies from: ${cookiesPath}`);
-      args.push('--cookies', cookiesPath);
-    } else {
-      console.warn('[downloader] WARNING: cookies.txt not found! Executing yt-dlp WITHOUT cookies.');
+    if (!usingDirectUrl) {
+      const cookiesPath = path.join(__dirname, '..', '..', 'temp', 'cookies.txt');
+      if (fs.existsSync(cookiesPath)) {
+        console.log(`[downloader] Executing yt-dlp WITH cookies from: ${cookiesPath}`);
+        args.push('--cookies', cookiesPath);
+      } else {
+        console.warn('[downloader] WARNING: cookies.txt not found! Executing yt-dlp WITHOUT cookies.');
+      }
     }
 
     args.push(
@@ -101,7 +124,7 @@ async function downloadMp3(songUrl, songTitle) {
       '--no-playlist',
       '--no-warnings',
       '--no-check-certificates',
-      songUrl
+      downloadUrl
     );
 
     const ytdlp = spawn(getYtdlpBinary(), args, {

@@ -10,6 +10,8 @@ const {
   StreamType,
 } = require('@discordjs/voice');
 const { updatePanel } = require('../utils/panelManager');
+const { getDirectStreamUrl } = require('./ytResolver');
+
 
 function getFfmpegPath() {
   const fs = require('fs');
@@ -304,6 +306,22 @@ class MusicQueue {
       if (cached) {
         console.log(`[MusicQueue] URL cache hit for ${videoId}`);
         return cached;
+      }
+    }
+
+    // Try youtubei.js first (especially important if authenticated with OAuth2)
+    if (videoId) {
+      try {
+        console.log(`[MusicQueue] Resolving direct stream URL via youtubei.js for ${videoId}...`);
+        const directUrl = await getDirectStreamUrl(videoId);
+        if (directUrl) {
+          console.log(`[MusicQueue] Successfully resolved stream URL via youtubei.js`);
+          directUrlCache.set(videoId, { url: directUrl, timestamp: Date.now() });
+          return directUrl;
+        }
+        console.log(`[MusicQueue] youtubei.js returned no stream URL, falling back to yt-dlp.`);
+      } catch (err) {
+        console.warn(`[MusicQueue] youtubei.js resolution failed for ${videoId}:`, err.message);
       }
     }
 
