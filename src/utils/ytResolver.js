@@ -1,6 +1,7 @@
 
 
 let innertubePromise = null;
+let guestInnertubePromise = null;
 
 
 const songCache = new Map();
@@ -115,6 +116,24 @@ async function getInnertube() {
   return innertubePromise;
 }
 
+async function getGuestInnertube() {
+  if (!guestInnertubePromise) {
+    guestInnertubePromise = import('youtubei.js')
+      .then(({ Innertube, Log }) => {
+        if (Log && typeof Log.setLevel === 'function') {
+          Log.setLevel(1);
+        }
+        console.log('[ytResolver] Initializing guest youtubei.js instance (no cookies)');
+        return withTimeout(Innertube.create({}), 15000, 'Innertube.create (guest)');
+      })
+      .catch((err) => {
+        guestInnertubePromise = null;
+        throw err;
+      });
+  }
+  return guestInnertubePromise;
+}
+
 const YT_MUSIC_REGEX = /music\.youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})/i;
 const YT_REGEX = /(?:youtube\.com\/watch\?v=|youtube\.com\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/i;
 
@@ -201,19 +220,20 @@ function formatDuration(seconds) {
 }
 
 async function buildSongDataFromInnertube(videoId, preferMusic = false) {
-  
   const cached = getCachedSong(videoId);
   if (cached) {
     console.log(`[ytResolver] Cache hit for ${videoId}`);
     return cached;
   }
 
-  try {
-    const yt = await getInnertube();
+  const fetchWithInstance = async (ytInstance) => {
     let info = null;
 
     if (preferMusic) {
-      info = await withTimeout(yt.music.getInfo(videoId), 10000, 'music.getInfo').catch(() => null);
+      info = await withTimeout(ytInstance.music.getInfo(videoId), 10000, 'music.getInfo').catch((err) => {
+        console.warn(`[ytResolver] music.getInfo failed for ${videoId}: ${err.message || err}`);
+        return null;
+      });
 
       if (info) {
         const tabs = info.tabs?.map((t) => t.title || t.type) || [];
@@ -221,15 +241,15 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
 
         if (tabs.includes('Details')) {
           console.log(`[ytResolver] Rejected ${videoId}: has Details tab (podcast/talk)`);
-          return null;
+          return { rejected: true };
         }
 
         if (playStatus === 'UNPLAYABLE') {
-          const basicInfo = await withTimeout(yt.getBasicInfo(videoId), 10000, 'getBasicInfo').catch(() => null);
+          const basicInfo = await withTimeout(ytInstance.getBasicInfo(videoId), 10000, 'getBasicInfo').catch(() => null);
           const category = basicInfo?.basic_info?.category;
           if (category !== 'Music') {
             console.log(`[ytResolver] Rejected ${videoId}: UNPLAYABLE on music + category="${category}"`);
-            return null;
+            return { rejected: true };
           }
           console.log(`[ytResolver] Accepted ${videoId}: UNPLAYABLE on music but category=Music`);
           info = basicInfo;
@@ -238,14 +258,94 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
 
       if (!info || !info.basic_info || !info.basic_info.title) {
         console.log(`[ytResolver] musicInfo missing or has no title for ${videoId}, falling back to getBasicInfo`);
-        info = await withTimeout(yt.getBasicInfo(videoId), 10000, 'getBasicInfo').catch(() => null);
+        info = await withTimeout(ytInstance.getBasicInfo(videoId), 10000, 'getBasicInfo').catch((err) => {
+          console.warn(`[ytResolver] getBasicInfo fallback failed for ${videoId}: ${err.message || err}`);
+          return null;
+        });
       }
     } else {
-      info = await withTimeout(yt.getBasicInfo(videoId), 10000, 'getBasicInfo').catch(() => null);
+      info = await withTimeout(ytInstance.getBasicInfo(videoId), 10000, 'getBasicInfo').catch((err) => {
+        console.warn(`[ytResolver] getBasicInfo failed for ${videoId}: ${err.message || err}`);
+        return null;
+      });
+    }
+
+    if (info && info.basic_info && info.basic_info.title) {
+      let releaseDateStr = null;
+      const page0 = info.page?.[0];
+      const microformat = page0?.microformat;
+      if (microformat) {
+        const pubDate = microformat.publish_date || microformat.upload_date;
+        if (pubDate && typeof pubDate === 'string') {
+          const dateMatch = pubDate.match(/^([0-9]{4}-[0-9]{2}-[0-9]{2})/);
+          if (dateMatch) releaseDateStr = dateMatch[1];
+        }
+      }
+
+      if (!releaseDateStr) {
+        const desc = info.basic_info?.short_description || '';
+        const releaseMatch = desc.match(/Released on:[ \t]*([0-9]{4}-[0-9]{2}-[0-9]{2})/i);
+        if (releaseMatch) releaseDateStr = releaseMatch[1];
+      }
+
+      if (!releaseDateStr) {
+        releaseDateStr = pickFirst(
+          info.basic_info?.upload_date,
+          info.basic_info?.publish_date,
+          null
+        );
+      }
+
+      if (!releaseDateStr && preferMusic) {
+        console.log(`[ytResolver] Release date missing from musicInfo, falling back to getBasicInfo for ${videoId}`);
+        const basicInfo = await withTimeout(ytInstance.getBasicInfo(videoId), 8000, 'getBasicInfo').catch(() => null);
+        if (basicInfo) {
+          const bPage0 = basicInfo.page?.[0];
+          const bMicroformat = bPage0?.microformat;
+          if (bMicroformat) {
+            const pubDate = bMicroformat.publish_date || bMicroformat.upload_date;
+            if (pubDate && typeof pubDate === 'string') {
+              const dateMatch = pubDate.match(/^([0-9]{4}-[0-9]{2}-[0-9]{2})/);
+              if (dateMatch) releaseDateStr = dateMatch[1];
+            }
+          }
+          if (!releaseDateStr) {
+            const desc = basicInfo.basic_info?.short_description || '';
+            const releaseMatch = desc.match(/Released on:[ \t]*([0-9]{4}-[0-9]{2}-[0-9]{2})/i);
+            if (releaseMatch) releaseDateStr = releaseMatch[1];
+          }
+          if (!releaseDateStr) {
+            releaseDateStr = pickFirst(
+              basicInfo.basic_info?.upload_date,
+              basicInfo.basic_info?.publish_date,
+              null
+            );
+          }
+        }
+      }
+      info.resolvedReleaseDateStr = releaseDateStr;
+    }
+
+    return info;
+  };
+
+  try {
+    const yt = await getInnertube();
+    let info = await fetchWithInstance(yt);
+
+    // If fetch failed and we have cookies, try again with the guest instance
+    if ((!info || (!info.basic_info && !info.rejected)) && getCookieString()) {
+      console.log(`[ytResolver] Fetch failed with authenticated instance for ${videoId}. Retrying with guest instance...`);
+      const ytGuest = await getGuestInnertube();
+      info = await fetchWithInstance(ytGuest);
+    }
+
+    if (info && info.rejected) {
+      return null;
     }
 
     if (!info || !info.basic_info || !info.basic_info.title) {
-      console.log(`[ytResolver] Rejecting ${videoId}: Missing basic_info or title`);
+      console.log(`[ytResolver] Rejecting ${videoId}: Missing basic_info or title after all attempts`);
       return null;
     }
 
@@ -282,62 +382,7 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
     );
 
     const url = `https://www.youtube.com/watch?v=${videoId}`;
-
-    
-    let releaseDateStr = null;
-    const page0 = info.page?.[0];
-    const microformat = page0?.microformat;
-    if (microformat) {
-      const pubDate = microformat.publish_date || microformat.upload_date;
-      if (pubDate && typeof pubDate === 'string') {
-        const dateMatch = pubDate.match(/^([0-9]{4}-[0-9]{2}-[0-9]{2})/);
-        if (dateMatch) releaseDateStr = dateMatch[1];
-      }
-    }
-
-    
-    if (!releaseDateStr) {
-      const desc = info.basic_info?.short_description || '';
-      const releaseMatch = desc.match(/Released on:[ \t]*([0-9]{4}-[0-9]{2}-[0-9]{2})/i);
-      if (releaseMatch) releaseDateStr = releaseMatch[1];
-    }
-
-    if (!releaseDateStr) {
-      releaseDateStr = pickFirst(
-        info.basic_info?.upload_date,
-        info.basic_info?.publish_date,
-        null
-      );
-    }
-
-    
-    if (!releaseDateStr && preferMusic) {
-      console.log(`[ytResolver] Release date missing from musicInfo, falling back to getBasicInfo for ${videoId}`);
-      const basicInfo = await withTimeout(yt.getBasicInfo(videoId), 8000, 'getBasicInfo').catch(() => null);
-      if (basicInfo) {
-        const bPage0 = basicInfo.page?.[0];
-        const bMicroformat = bPage0?.microformat;
-        if (bMicroformat) {
-          const pubDate = bMicroformat.publish_date || bMicroformat.upload_date;
-          if (pubDate && typeof pubDate === 'string') {
-            const dateMatch = pubDate.match(/^([0-9]{4}-[0-9]{2}-[0-9]{2})/);
-            if (dateMatch) releaseDateStr = dateMatch[1];
-          }
-        }
-        if (!releaseDateStr) {
-          const desc = basicInfo.basic_info?.short_description || '';
-          const releaseMatch = desc.match(/Released on:[ \t]*([0-9]{4}-[0-9]{2}-[0-9]{2})/i);
-          if (releaseMatch) releaseDateStr = releaseMatch[1];
-        }
-        if (!releaseDateStr) {
-          releaseDateStr = pickFirst(
-            basicInfo.basic_info?.upload_date,
-            basicInfo.basic_info?.publish_date,
-            null
-          );
-        }
-      }
-    }
+    const releaseDateStr = info.resolvedReleaseDateStr;
 
     const result = {
       title,
@@ -350,7 +395,6 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
       releaseDate: formatReleaseDate(releaseDateStr),
     };
 
-    
     cacheSong(videoId, result);
     return result;
   } catch (err) {
@@ -360,11 +404,10 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
 }
 
 async function searchYouTubeMusic(query) {
-  try {
-    const yt = await getInnertube();
+  const searchWithInstance = async (ytInstance) => {
     console.log(`[ytResolver] Searching YouTube Music for: "${query}"`);
     const results = await withTimeout(
-      yt.music.search(query),
+      ytInstance.music.search(query),
       12000,
       'music.search'
     );
@@ -377,12 +420,30 @@ async function searchYouTubeMusic(query) {
           (i.item_type === 'song' || i.item_type === 'video')
       ) || [];
 
+    return items;
+  };
+
+  try {
+    const yt = await getInnertube();
+    let items = [];
+    try {
+      items = await searchWithInstance(yt);
+    } catch (err) {
+      console.warn(`[ytResolver] Search with authenticated instance failed: ${err.message || err}`);
+      if (getCookieString()) {
+        console.log('[ytResolver] Retrying search with guest instance...');
+        const ytGuest = await getGuestInnertube();
+        items = await searchWithInstance(ytGuest);
+      } else {
+        throw err;
+      }
+    }
+
     if (items.length === 0) {
       console.log(`[ytResolver] No matching songs/videos found on YouTube Music for "${query}"`);
       return null;
     }
 
-    
     for (const item of items.slice(0, 3)) {
       if (!item.id) continue;
       const song = await buildSongDataFromInnertube(item.id, true);
@@ -391,7 +452,7 @@ async function searchYouTubeMusic(query) {
 
     return null;
   } catch (err) {
-    console.error('[ytResolver] search error:', err.message);
+    console.error('[ytResolver] search error:', err.message || err);
     return null;
   }
 }
