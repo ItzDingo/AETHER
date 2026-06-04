@@ -10,8 +10,8 @@ function buildPanel(queue) {
 
   const embed = new EmbedBuilder()
     .setColor(song ? '#1DB954' : '#2C2F33')
-    .setAuthor({ name: '🎵 Now Playing' })
-    .setFooter({ text: 'AETHER Music Bot' });
+    .setAuthor({ name: '🎵 Musico — Now Playing' })
+    .setFooter({ text: 'Musico Music Bot' });
 
   if (song) {
     embed
@@ -100,7 +100,7 @@ async function sendPanel(queue, channel) {
     const msg = await channel.send(panelData);
     queue.panelMessage = msg;
     queue.panelChannelId = channel.id;
-  } catch { }
+  } catch {}
 }
 
 async function updatePanel(queue) {
