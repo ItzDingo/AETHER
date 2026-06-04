@@ -1,9 +1,0 @@
-providers = ["...", "python"]
-
-[phases.setup]
-nixPkgs = [
-  "...",
-  "python3",
-  "yt-dlp",
-  "ffmpeg"
-]

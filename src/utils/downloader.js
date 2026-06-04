@@ -4,13 +4,25 @@ const fs = require('fs');
 const ffmpegPath = require('ffmpeg-static');
 
 function getYtdlpBinary() {
+  const fs = require('fs');
+  if (fs.existsSync('/usr/local/bin/yt-dlp')) {
+    return '/usr/local/bin/yt-dlp';
+  }
+  if (fs.existsSync('/usr/bin/yt-dlp')) {
+    return '/usr/bin/yt-dlp';
+  }
+
   try {
     const ytdl = require('youtube-dl-exec');
-    const fs = require('fs');
-    if (ytdl.constants && ytdl.constants.YOUTUBE_DL_PATH && fs.existsSync(ytdl.constants.YOUTUBE_DL_PATH)) {
+    if (
+      ytdl.constants &&
+      ytdl.constants.YOUTUBE_DL_PATH &&
+      fs.existsSync(ytdl.constants.YOUTUBE_DL_PATH)
+    ) {
       return ytdl.constants.YOUTUBE_DL_PATH;
     }
   } catch {}
+
   return 'yt-dlp';
 }
 

@@ -13,14 +13,16 @@ const { updatePanel } = require('../utils/panelManager');
 const ffmpegPath = require('ffmpeg-static');
 
 function getYtdlpBinary() {
-  if (process.env.RAILWAY_ENVIRONMENT) {
-    return 'yt-dlp';
+  const fs = require('fs');
+  if (fs.existsSync('/usr/local/bin/yt-dlp')) {
+    return '/usr/local/bin/yt-dlp';
+  }
+  if (fs.existsSync('/usr/bin/yt-dlp')) {
+    return '/usr/bin/yt-dlp';
   }
 
   try {
     const ytdl = require('youtube-dl-exec');
-    const fs = require('fs');
-
     if (
       ytdl.constants &&
       ytdl.constants.YOUTUBE_DL_PATH &&
