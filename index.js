@@ -11,11 +11,13 @@ if (process.env.YOUTUBE_COOKIES) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
     const cookiesPath = path.join(tempDir, 'cookies.txt');
-    let cookiesContent = process.env.YOUTUBE_COOKIES;
+    let cookiesContent = process.env.YOUTUBE_COOKIES.trim();
     
-    // Check if the content is base64 encoded
-    if (!cookiesContent.includes('\t') && !cookiesContent.includes('\n')) {
-      cookiesContent = Buffer.from(cookiesContent, 'base64').toString('utf-8');
+    // If it doesn't start with the Netscape header, it's Base64 encoded
+    if (!cookiesContent.startsWith('# Netscape HTTP Cookie File')) {
+      // Clean up any newlines or spaces added by console text wrapping
+      const cleanBase64 = cookiesContent.replace(/\s+/g, '');
+      cookiesContent = Buffer.from(cleanBase64, 'base64').toString('utf-8');
     }
     
     fs.writeFileSync(cookiesPath, cookiesContent, 'utf-8');
