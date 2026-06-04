@@ -48,7 +48,7 @@ function initPresence(client) {
 async function updateBotPresenceAndVoiceStatus(queue, song) {
   const client = queue.client;
 
-  // 1. Update Voice Channel Status
+  
   if (queue.connection) {
     const channelId = queue.getVoiceChannelId();
     if (channelId) {
@@ -68,7 +68,7 @@ async function updateBotPresenceAndVoiceStatus(queue, song) {
     }
   }
 
-  // 2. Update Bot Presence
+  
   if (song) {
     try {
       client.user.setPresence({

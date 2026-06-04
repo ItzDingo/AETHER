@@ -87,6 +87,7 @@ async function downloadMp3(songUrl, songTitle) {
       '--ffmpeg-location', getFfmpegPath(),
       '--user-agent',
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      '--extractor-args', 'youtube:player_client=ios,web_safari',
     ];
 
     if (fs.existsSync(cookiesPath)) {

@@ -1,8 +1,8 @@
-// Test voice dependencies
+
 const { generateDependencyReport } = require('@discordjs/voice');
 console.log(generateDependencyReport());
 
-// Test libsodium-wrappers
+
 async function testSodium() {
   try {
     const sodium = require('libsodium-wrappers');
@@ -14,7 +14,7 @@ async function testSodium() {
   }
 }
 
-// Test UDP connectivity (Discord voice uses UDP)
+
 async function testUDP() {
   const dgram = require('dgram');
   return new Promise((resolve) => {
@@ -35,7 +35,7 @@ async function testUDP() {
     socket.bind(0, () => {
       const addr = socket.address();
       console.log('[OK] UDP socket created on port', addr.port);
-      // Try sending a packet to a Discord voice server IP range
+      
       const buf = Buffer.from('test');
       socket.send(buf, 0, buf.length, 443, '162.159.128.233', (err) => {
         clearTimeout(timeout);
@@ -51,7 +51,7 @@ async function testUDP() {
   });
 }
 
-// Test Node.js version
+
 console.log('\nNode.js version:', process.version);
 console.log('Platform:', process.platform, process.arch);
 

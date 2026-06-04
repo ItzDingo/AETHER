@@ -13,10 +13,10 @@ module.exports = {
 
       const members = channel.members.filter(m => !m.user.bot);
       if (members.size === 0) {
-        // Bot is alone — start 60-second alone timer
+        
         queue.startAloneTimer();
       } else {
-        // Someone is in the channel — cancel the alone timer
+        
         queue.clearAloneTimer();
       }
     } catch {}

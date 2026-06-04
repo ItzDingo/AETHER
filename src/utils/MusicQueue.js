@@ -51,9 +51,9 @@ function getYtdlpBinary() {
   return 'yt-dlp';
 }
 
-// In-memory cache for yt-dlp direct URLs (videoId -> { url, timestamp })
+
 const directUrlCache = new Map();
-const URL_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const URL_CACHE_TTL = 5 * 60 * 1000; 
 
 function getCachedUrl(videoId) {
   const entry = directUrlCache.get(videoId);
@@ -143,13 +143,13 @@ class MusicQueue {
   async connect(voiceChannel) {
     const existing = getVoiceConnection(this.guildId);
     if (existing) {
-      // If the existing connection is in Ready state, reuse it
+      
       if (existing.state.status === VoiceConnectionStatus.Ready) {
         this.connection = existing;
         this.connection.subscribe(this.player);
         return;
       }
-      // If it's stuck in a bad state, destroy it and recreate
+      
       console.log(`[Voice] Existing connection in "${existing.state.status}" state, destroying and reconnecting...`);
       try { existing.destroy(); } catch { }
     }
@@ -187,11 +187,11 @@ class MusicQueue {
           30000
         );
         console.log('[Voice] Ready');
-        break; // success
+        break; 
       } catch (err) {
         console.error(`[MusicQueue] Voice connection attempt ${attempt} failed:`, err.message);
 
-        // Destroy the broken connection so it doesn't keep cycling
+        
         try { this.connection.destroy(); } catch { }
         this.connection = null;
 
@@ -219,7 +219,7 @@ class MusicQueue {
   }
 
   async getDirectAudioUrl(videoUrl, videoId) {
-    // Check URL cache first
+    
     if (videoId) {
       const cached = getCachedUrl(videoId);
       if (cached) {
@@ -240,6 +240,7 @@ class MusicQueue {
       '--no-check-certificates',
       '--user-agent',
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      '--extractor-args', 'youtube:player_client=ios,web_safari',
     ];
 
     if (fs.existsSync(cookiesPath)) {
@@ -264,7 +265,7 @@ class MusicQueue {
       throw new Error('yt-dlp did not return a direct audio URL.');
     }
 
-    // Cache the URL
+    
     if (videoId) {
       directUrlCache.set(videoId, { url: directUrl, timestamp: Date.now() });
     }
@@ -292,7 +293,7 @@ class MusicQueue {
       '-vn', '-sn', '-dn'
     );
 
-    // Audio filter chain: loudness normalization + optional reverb
+    
     const filters = [];
     filters.push('loudnorm=I=-14:TP=-1:LRA=11');
     if (this.reverb) {
@@ -363,9 +364,9 @@ class MusicQueue {
       this.player.play(resource);
       this.isReverbToggling = false;
 
-      // Update presence and voice channel status AFTER playback has started,
-      // with a delay to avoid the REST call's CHANNEL_UPDATE gateway event
-      // disrupting the freshly established audio pipe.
+      
+      
+      
       setTimeout(() => {
         const { updateBotPresenceAndVoiceStatus } = require('./presenceManager');
         updateBotPresenceAndVoiceStatus(this, song).catch(() => { });
@@ -440,7 +441,7 @@ class MusicQueue {
 
   toggleReverb() {
     this.reverb = !this.reverb;
-    // If currently playing, restart the ffmpeg process with/without reverb from the current timestamp
+    
     if (this.isPlaying && this.current) {
       this.isReverbToggling = true;
       const elapsed = this.resource ? this.resource.playbackDuration : 0;
@@ -451,7 +452,7 @@ class MusicQueue {
     return this.reverb;
   }
 
-  // --- Auto-leave timer (idle, no music playing) ---
+  
   startAutoLeaveTimer() {
     this.clearAutoLeaveTimer();
     const timeout = parseInt(process.env.AUTO_LEAVE_TIMEOUT) || 300000;
@@ -467,7 +468,7 @@ class MusicQueue {
     }
   }
 
-  // --- Alone timer (bot is only member in voice channel, 60s) ---
+  
   startAloneTimer() {
     this.clearAloneTimer();
     console.log('[MusicQueue] Bot is alone in voice channel. Leaving in 60 seconds...');

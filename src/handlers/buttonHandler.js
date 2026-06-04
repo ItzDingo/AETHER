@@ -8,6 +8,8 @@ const {
 const { updatePanel } = require('../utils/panelManager');
 const { downloadMp3 } = require('../utils/downloader');
 
+const downloadCooldowns = new Map();
+
 async function handleButton(interaction, client) {
   const queue = client.queues.get(interaction.guildId);
   console.log(`[Interaction] Button "${interaction.customId}" clicked by ${interaction.user.tag} (Guild ID: ${interaction.guildId}). Active queue exists in memory: ${!!queue}`);
@@ -105,13 +107,29 @@ async function handleButton(interaction, client) {
 
     const song = queue.current;
 
-    // Refuse download if the song is longer than 8 minutes (480 seconds)
+    
     if (song.durationSec > 480) {
       return interaction.reply({
         content: `⚠️ The current song is longer than 8 minutes (${song.duration || '0:00'}). Downloading this song is restricted.`,
         ephemeral: true
       });
     }
+
+    const userId = interaction.user.id;
+    const cooldownTime = 30000;
+    const now = Date.now();
+    if (downloadCooldowns.has(userId)) {
+      const expirationTime = downloadCooldowns.get(userId) + cooldownTime;
+      if (now < expirationTime) {
+        const timeLeft = Math.ceil((expirationTime - now) / 1000);
+        return interaction.reply({
+          content: `⏳ Please wait **${timeLeft}s** before using the download button again.`,
+          ephemeral: true
+        });
+      }
+    }
+
+    downloadCooldowns.set(userId, now);
 
     await interaction.reply({ content: '⬇️ Downloading and converting to MP3, please wait...', ephemeral: true });
 

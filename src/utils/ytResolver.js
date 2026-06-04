@@ -1,8 +1,8 @@
-// ytResolver uses Innertube directly for all searches and lookups (yt-search removed)
+
 
 let innertubePromise = null;
 
-// In-memory song cache (videoId -> { data, timestamp }), TTL = 10 minutes
+
 const songCache = new Map();
 const SONG_CACHE_TTL = 10 * 60 * 1000;
 
@@ -49,7 +49,7 @@ async function getInnertube() {
     innertubePromise = import('youtubei.js')
       .then(({ Innertube, Log }) => {
         if (Log && typeof Log.setLevel === 'function') {
-          // Suppress parser warnings and non-critical type mismatch logs
+          
           Log.setLevel(1);
         }
         return withTimeout(Innertube.create(), 15000, 'Innertube.create');
@@ -149,7 +149,7 @@ function formatDuration(seconds) {
 }
 
 async function buildSongDataFromInnertube(videoId, preferMusic = false) {
-  // Check cache first
+  
   const cached = getCachedSong(videoId);
   if (cached) {
     console.log(`[ytResolver] Cache hit for ${videoId}`);
@@ -182,9 +182,9 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
           console.log(`[ytResolver] Accepted ${videoId}: UNPLAYABLE on music but category=Music`);
           info = basicInfo;
         }
-        // For playable songs (OK status), we skip the getBasicInfo call entirely.
-        // music.getInfo provides title, author, duration, thumbnail.
-        // Release date is extracted from music.getInfo's page microformat if available.
+        
+        
+        
       }
     } else {
       info = await withTimeout(yt.getBasicInfo(videoId), 10000, 'getBasicInfo').catch(() => null);
@@ -231,7 +231,7 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
 
     const url = `https://www.youtube.com/watch?v=${videoId}`;
 
-    // Extract release date — try page microformat first (works for both music.getInfo and getBasicInfo)
+    
     let releaseDateStr = null;
     const page0 = info.page?.[0];
     const microformat = page0?.microformat;
@@ -243,7 +243,7 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
       }
     }
 
-    // Fallback 1: check description for "Released on: YYYY-MM-DD"
+    
     if (!releaseDateStr) {
       const desc = info.basic_info?.short_description || '';
       const releaseMatch = desc.match(/Released on:[ \t]*([0-9]{4}-[0-9]{2}-[0-9]{2})/i);
@@ -258,7 +258,7 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
       );
     }
 
-    // Fallback 2: if still missing (common for music.getInfo), perform a fallback getBasicInfo call to retrieve it
+    
     if (!releaseDateStr && preferMusic) {
       console.log(`[ytResolver] Release date missing from musicInfo, falling back to getBasicInfo for ${videoId}`);
       const basicInfo = await withTimeout(yt.getBasicInfo(videoId), 8000, 'getBasicInfo').catch(() => null);
@@ -298,7 +298,7 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
       releaseDate: formatReleaseDate(releaseDateStr),
     };
 
-    // Cache the result
+    
     cacheSong(videoId, result);
     return result;
   } catch (err) {
@@ -330,7 +330,7 @@ async function searchYouTubeMusic(query) {
       return null;
     }
 
-    // Try to get complete metadata for the first few matching items
+    
     for (const item of items.slice(0, 3)) {
       if (!item.id) continue;
       const song = await buildSongDataFromInnertube(item.id, true);
@@ -349,7 +349,7 @@ async function resolveSong(input) {
 
   if (urlResult) {
     const { id } = urlResult;
-    // Check cache first
+    
     const cached = getCachedSong(id);
     if (cached) {
       console.log(`[ytResolver] Cache hit for URL ${id}`);

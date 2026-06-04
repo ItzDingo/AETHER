@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 require('dotenv').config();
 
-// Dynamically write YouTube cookies if provided in environment variables
+
 if (process.env.YOUTUBE_COOKIES) {
   try {
     const tempDir = path.join(__dirname, 'temp');
@@ -13,9 +13,9 @@ if (process.env.YOUTUBE_COOKIES) {
     const cookiesPath = path.join(tempDir, 'cookies.txt');
     let cookiesContent = process.env.YOUTUBE_COOKIES.trim();
     
-    // If it doesn't start with the Netscape header, it's Base64 encoded
+    
     if (!cookiesContent.startsWith('# Netscape HTTP Cookie File')) {
-      // Clean up any newlines or spaces added by console text wrapping
+      
       const cleanBase64 = cookiesContent.replace(/\s+/g, '');
       cookiesContent = Buffer.from(cleanBase64, 'base64').toString('utf-8');
     }
@@ -90,6 +90,6 @@ function startSender() {
   });
 }
 
-// Start both
+
 startSender();
 startBot();
