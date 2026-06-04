@@ -218,16 +218,7 @@ class MusicQueue {
     });
   }
 
-  async getDirectAudioUrl(videoUrl, videoId) {
-    
-    if (videoId) {
-      const cached = getCachedUrl(videoId);
-      if (cached) {
-        console.log(`[MusicQueue] URL cache hit for ${videoId}`);
-        return cached;
-      }
-    }
-
+  async _ytdlpGetUrl(videoUrl) {
     const path = require('path');
     const fs = require('fs');
     const cookiesPath = path.join(__dirname, '..', '..', 'temp', 'cookies.txt');
@@ -245,10 +236,7 @@ class MusicQueue {
     ];
 
     if (fs.existsSync(cookiesPath)) {
-      console.log(`[MusicQueue] Executing yt-dlp WITH cookies from: ${cookiesPath}`);
       args.push('--cookies', cookiesPath);
-    } else {
-      console.warn('[MusicQueue] WARNING: cookies.txt not found! Executing yt-dlp WITHOUT cookies.');
     }
 
     args.push('-g', videoUrl);
@@ -269,12 +257,79 @@ class MusicQueue {
       throw new Error('yt-dlp did not return a direct audio URL.');
     }
 
-    
-    if (videoId) {
-      directUrlCache.set(videoId, { url: directUrl, timestamp: Date.now() });
+    return directUrl;
+  }
+
+  async _innertubeGetUrl(videoId) {
+    console.log(`[MusicQueue] Trying youtubei.js fallback for ${videoId}`);
+    const { Innertube } = await import('youtubei.js');
+    const yt = await Innertube.create();
+    const info = await yt.getBasicInfo(videoId);
+
+    const format = info.chooseFormat({ type: 'audio', quality: 'best' });
+    if (!format) {
+      throw new Error('youtubei.js: no audio format available');
     }
 
-    return directUrl;
+    const url = format.decipher(yt.session.player);
+    if (!url) {
+      throw new Error('youtubei.js: failed to decipher stream URL');
+    }
+
+    console.log(`[MusicQueue] youtubei.js fallback succeeded for ${videoId}`);
+    return url;
+  }
+
+  async getDirectAudioUrl(videoUrl, videoId) {
+    if (videoId) {
+      const cached = getCachedUrl(videoId);
+      if (cached) {
+        console.log(`[MusicQueue] URL cache hit for ${videoId}`);
+        return cached;
+      }
+    }
+
+    const maxAttempts = 3;
+    const delays = [0, 2000, 4000];
+    let lastError = null;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (delays[attempt] > 0) {
+        console.log(`[MusicQueue] yt-dlp retry ${attempt + 1}/${maxAttempts} in ${delays[attempt] / 1000}s...`);
+        await new Promise(r => setTimeout(r, delays[attempt]));
+      }
+
+      try {
+        const directUrl = await this._ytdlpGetUrl(videoUrl);
+
+        if (videoId) {
+          directUrlCache.set(videoId, { url: directUrl, timestamp: Date.now() });
+        }
+        return directUrl;
+      } catch (err) {
+        lastError = err;
+        const msg = err.message || '';
+        const isBotBlock = msg.includes('Sign in to confirm') || msg.includes('not a bot');
+        console.warn(`[MusicQueue] yt-dlp attempt ${attempt + 1}/${maxAttempts} failed: ${msg.substring(0, 120)}`);
+
+        if (!isBotBlock) {
+          break;
+        }
+      }
+    }
+
+    if (videoId) {
+      try {
+        const directUrl = await this._innertubeGetUrl(videoId);
+
+        directUrlCache.set(videoId, { url: directUrl, timestamp: Date.now() });
+        return directUrl;
+      } catch (fallbackErr) {
+        console.error(`[MusicQueue] youtubei.js fallback also failed: ${fallbackErr.message}`);
+      }
+    }
+
+    throw lastError || new Error('Failed to resolve audio URL');
   }
 
   _buildFfmpegArgs(directUrl, seekTimeMs = 0) {
