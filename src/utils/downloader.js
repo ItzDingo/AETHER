@@ -88,10 +88,14 @@ async function downloadMp3(songUrl, songTitle) {
       '--user-agent',
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       '--extractor-args', 'youtube:player_client=ios,web_safari',
+      '--js-runtimes', 'deno,node',
     ];
 
     if (fs.existsSync(cookiesPath)) {
+      console.log(`[downloader] Executing yt-dlp WITH cookies from: ${cookiesPath}`);
       args.push('--cookies', cookiesPath);
+    } else {
+      console.warn('[downloader] WARNING: cookies.txt not found! Executing yt-dlp WITHOUT cookies.');
     }
 
     args.push(

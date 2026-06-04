@@ -241,10 +241,14 @@ class MusicQueue {
       '--user-agent',
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       '--extractor-args', 'youtube:player_client=ios,web_safari',
+      '--js-runtimes', 'deno,node',
     ];
 
     if (fs.existsSync(cookiesPath)) {
+      console.log(`[MusicQueue] Executing yt-dlp WITH cookies from: ${cookiesPath}`);
       args.push('--cookies', cookiesPath);
+    } else {
+      console.warn('[MusicQueue] WARNING: cookies.txt not found! Executing yt-dlp WITHOUT cookies.');
     }
 
     args.push('-g', videoUrl);
