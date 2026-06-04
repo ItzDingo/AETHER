@@ -221,7 +221,7 @@ class MusicQueue {
   async _ytdlpGetUrl(videoUrl) {
     const path = require('path');
     const fs = require('fs');
-    const cookiesPath = path.join(__dirname, '..', '..', 'temp', 'cookies.txt');
+    const os = require('os');
 
     const args = [
       '-f',
@@ -235,8 +235,29 @@ class MusicQueue {
       '--js-runtimes', 'deno,node',
     ];
 
-    if (fs.existsSync(cookiesPath)) {
-      args.push('--cookies', cookiesPath);
+    // Try to use cookies from environment variable or local file
+    const cookiesEnv = process.env.YOUTUBE_COOKIES;
+    let cookiesPath = null;
+
+    if (cookiesEnv) {
+      // Write cookies from env var to a temp file
+      cookiesPath = path.join(os.tmpdir(), `yt-cookies-${Date.now()}.txt`);
+      try {
+        fs.writeFileSync(cookiesPath, cookiesEnv, 'utf8');
+        args.push('--cookies', cookiesPath);
+        console.log('[MusicQueue] Using cookies from YOUTUBE_COOKIES environment variable');
+      } catch (err) {
+        console.warn('[MusicQueue] Failed to write cookies from env var:', err.message);
+      }
+    } else {
+      // Fallback to local cookies file
+      const localCookiesPath = path.join(__dirname, '..', '..', 'temp', 'cookies.txt');
+      if (fs.existsSync(localCookiesPath)) {
+        args.push('--cookies', localCookiesPath);
+        console.log('[MusicQueue] Using cookies from local file');
+      } else {
+        console.warn('[MusicQueue] No cookies found (YOUTUBE_COOKIES env var or temp/cookies.txt)');
+      }
     }
 
     args.push('-g', videoUrl);
@@ -247,17 +268,26 @@ class MusicQueue {
 
     this.activeProcesses.push(ytdlp);
 
-    const { stdout } = await waitForProcessOutput(ytdlp);
-    const directUrl = stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean);
+    try {
+      const { stdout } = await waitForProcessOutput(ytdlp);
+      const directUrl = stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find(Boolean);
 
-    if (!directUrl) {
-      throw new Error('yt-dlp did not return a direct audio URL.');
+      if (!directUrl) {
+        throw new Error('yt-dlp did not return a direct audio URL.');
+      }
+
+      return directUrl;
+    } finally {
+      // Clean up temp cookies file if we created one
+      if (cookiesPath && fs.existsSync(cookiesPath)) {
+        try {
+          fs.unlinkSync(cookiesPath);
+        } catch { }
+      }
     }
-
-    return directUrl;
   }
 
   async _innertubeGetUrl(videoId) {
@@ -567,3 +597,4 @@ class MusicQueue {
 }
 
 module.exports = MusicQueue;
+
