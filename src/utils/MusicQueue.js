@@ -53,7 +53,7 @@ function getYtdlpBinary() {
 
 
 const directUrlCache = new Map();
-const URL_CACHE_TTL = 5 * 60 * 1000; 
+const URL_CACHE_TTL = 30 * 1000; // 30 seconds - YouTube URLs expire quickly
 
 function getCachedUrl(videoId) {
   const entry = directUrlCache.get(videoId);
@@ -265,8 +265,6 @@ class MusicQueue {
 
     args.push('-g', videoUrl);
 
-    console.log(`[MusicQueue] Running yt-dlp with args: ${args.join(' ')}`);
-
     const ytdlp = spawn(getYtdlpBinary(), args, {
       windowsHide: true,
     });
@@ -321,14 +319,7 @@ class MusicQueue {
   }
 
   async getDirectAudioUrl(videoUrl, videoId) {
-    if (videoId) {
-      const cached = getCachedUrl(videoId);
-      if (cached) {
-        console.log(`[MusicQueue] URL cache hit for ${videoId}`);
-        return cached;
-      }
-    }
-
+    // Don't use cache - YouTube URLs expire too quickly
     const maxAttempts = 3;
     const delays = [0, 2000, 4000];
     let lastError = null;
@@ -341,10 +332,6 @@ class MusicQueue {
 
       try {
         const directUrl = await this._ytdlpGetUrl(videoUrl);
-
-        if (videoId) {
-          directUrlCache.set(videoId, { url: directUrl, timestamp: Date.now() });
-        }
         return directUrl;
       } catch (err) {
         lastError = err;
@@ -361,8 +348,6 @@ class MusicQueue {
     if (videoId) {
       try {
         const directUrl = await this._innertubeGetUrl(videoId);
-
-        directUrlCache.set(videoId, { url: directUrl, timestamp: Date.now() });
         return directUrl;
       } catch (fallbackErr) {
         console.error(`[MusicQueue] youtubei.js fallback also failed: ${fallbackErr.message}`);
