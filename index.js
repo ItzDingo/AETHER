@@ -21,7 +21,8 @@ if (process.env.YOUTUBE_COOKIES) {
     }
     
     fs.writeFileSync(cookiesPath, cookiesContent, 'utf-8');
-    console.log('[Runner] Successfully loaded YouTube cookies.');
+    const firstLine = cookiesContent.split('\n')[0] || '';
+    console.log(`[Runner] Successfully loaded YouTube cookies. File starts with: "${firstLine.substring(0, 100)}"`);
   } catch (err) {
     console.error('[Runner] Error writing YouTube cookies file:', err.message);
   }
