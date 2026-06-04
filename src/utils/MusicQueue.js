@@ -212,7 +212,11 @@ class MusicQueue {
       }
     }
 
-    const ytdlp = spawn(getYtdlpBinary(), [
+    const path = require('path');
+    const fs = require('fs');
+    const cookiesPath = path.join(__dirname, '..', '..', 'temp', 'cookies.txt');
+
+    const args = [
       '-f',
       'bestaudio[acodec=opus]/bestaudio/best',
       '--no-playlist',
@@ -220,9 +224,15 @@ class MusicQueue {
       '--no-check-certificates',
       '--add-header',
       'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      '-g',
-      videoUrl,
-    ], {
+    ];
+
+    if (fs.existsSync(cookiesPath)) {
+      args.push('--cookies', cookiesPath);
+    }
+
+    args.push('-g', videoUrl);
+
+    const ytdlp = spawn(getYtdlpBinary(), args, {
       windowsHide: true,
     });
 

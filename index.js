@@ -1,6 +1,29 @@
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 require('dotenv').config();
+
+// Dynamically write YouTube cookies if provided in environment variables
+if (process.env.YOUTUBE_COOKIES) {
+  try {
+    const tempDir = path.join(__dirname, 'temp');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    const cookiesPath = path.join(tempDir, 'cookies.txt');
+    let cookiesContent = process.env.YOUTUBE_COOKIES;
+    
+    // Check if the content is base64 encoded
+    if (!cookiesContent.includes('\t') && !cookiesContent.includes('\n')) {
+      cookiesContent = Buffer.from(cookiesContent, 'base64').toString('utf-8');
+    }
+    
+    fs.writeFileSync(cookiesPath, cookiesContent, 'utf-8');
+    console.log('[Runner] Successfully loaded YouTube cookies.');
+  } catch (err) {
+    console.error('[Runner] Error writing YouTube cookies file:', err.message);
+  }
+}
 
 let restartCount = 0;
 const MAX_RESTARTS = 10;

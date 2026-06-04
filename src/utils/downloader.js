@@ -63,18 +63,28 @@ async function downloadMp3(songUrl, songTitle) {
     console.log(`[downloader] Downloading and converting to MP3: ${songUrl}`);
     console.log(`[downloader] Output path: ${outputPath}`);
 
-    const ytdlp = spawn(getYtdlpBinary(), [
+    const cookiesPath = path.join(__dirname, '..', '..', 'temp', 'cookies.txt');
+    const args = [
       '-f', 'bestaudio/best',
       '-x',
       '--audio-format', 'mp3',
       '--audio-quality', '5',
       '--ffmpeg-location', ffmpegDir,
+    ];
+
+    if (fs.existsSync(cookiesPath)) {
+      args.push('--cookies', cookiesPath);
+    }
+
+    args.push(
       '-o', outputPath,
       '--no-playlist',
       '--no-warnings',
       '--no-check-certificates',
-      songUrl,
-    ], {
+      songUrl
+    );
+
+    const ytdlp = spawn(getYtdlpBinary(), args, {
       windowsHide: true,
     });
 
