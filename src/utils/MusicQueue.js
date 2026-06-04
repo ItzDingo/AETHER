@@ -231,8 +231,6 @@ class MusicQueue {
       '--no-check-certificates',
       '--user-agent',
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      '--extractor-args', 'youtube:player_client=ios,web_safari',
-      '--js-runtimes', 'deno,node',
     ];
 
     // Try to use cookies from environment variable or local file
@@ -300,26 +298,6 @@ class MusicQueue {
     }
   }
 
-  async _innertubeGetUrl(videoId) {
-    console.log(`[MusicQueue] Trying youtubei.js fallback for ${videoId}`);
-    const { Innertube } = await import('youtubei.js');
-    const yt = await Innertube.create();
-    const info = await yt.getBasicInfo(videoId);
-
-    const format = info.chooseFormat({ type: 'audio', quality: 'best' });
-    if (!format) {
-      throw new Error('youtubei.js: no audio format available');
-    }
-
-    const url = format.decipher(yt.session.player);
-    if (!url) {
-      throw new Error('youtubei.js: failed to decipher stream URL');
-    }
-
-    console.log(`[MusicQueue] youtubei.js fallback succeeded for ${videoId}`);
-    return url;
-  }
-
   async getDirectAudioUrl(videoUrl, videoId) {
     if (videoId) {
       const cached = getCachedUrl(videoId);
@@ -355,17 +333,6 @@ class MusicQueue {
         if (!isBotBlock) {
           break;
         }
-      }
-    }
-
-    if (videoId) {
-      try {
-        const directUrl = await this._innertubeGetUrl(videoId);
-
-        directUrlCache.set(videoId, { url: directUrl, timestamp: Date.now() });
-        return directUrl;
-      } catch (fallbackErr) {
-        console.error(`[MusicQueue] youtubei.js fallback also failed: ${fallbackErr.message}`);
       }
     }
 

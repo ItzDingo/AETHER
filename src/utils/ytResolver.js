@@ -44,15 +44,52 @@ function formatReleaseDate(dateStr) {
   return cleaned;
 }
 
+function getCookieString() {
+  const fs = require('fs');
+  const path = require('path');
+  const cookiesPath = path.join(__dirname, '..', '..', 'temp', 'cookies.txt');
+  if (!fs.existsSync(cookiesPath)) {
+    return '';
+  }
+  try {
+    const data = fs.readFileSync(cookiesPath, 'utf8');
+    const lines = data.split('\n');
+    const cookies = [];
+
+    for (const line of lines) {
+      if (line.startsWith('#') || !line.trim()) continue;
+      const parts = line.split('\t');
+      if (parts.length >= 7) {
+        const name = parts[5].trim();
+        const value = parts[6].trim();
+        cookies.push(`${name}=${value}`);
+      }
+    }
+    return cookies.join('; ');
+  } catch (err) {
+    console.error('[ytResolver] Error reading/parsing cookies.txt:', err);
+    return '';
+  }
+}
+
 async function getInnertube() {
   if (!innertubePromise) {
     innertubePromise = import('youtubei.js')
       .then(({ Innertube, Log }) => {
         if (Log && typeof Log.setLevel === 'function') {
-          
           Log.setLevel(1);
         }
-        return withTimeout(Innertube.create(), 15000, 'Innertube.create');
+        
+        const cookie = getCookieString();
+        const config = {};
+        if (cookie) {
+          console.log(`[ytResolver] Initializing youtubei.js with cookies (length: ${cookie.length})`);
+          config.cookie = cookie;
+        } else {
+          console.log('[ytResolver] Initializing youtubei.js WITHOUT cookies');
+        }
+
+        return withTimeout(Innertube.create(config), 15000, 'Innertube.create');
       })
       .catch((err) => {
         innertubePromise = null;
@@ -182,22 +219,22 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
           console.log(`[ytResolver] Accepted ${videoId}: UNPLAYABLE on music but category=Music`);
           info = basicInfo;
         }
-        
-        
-        
+      }
+
+      if (!info || !info.basic_info || !info.basic_info.title) {
+        console.log(`[ytResolver] musicInfo missing or has no title for ${videoId}, falling back to getBasicInfo`);
+        info = await withTimeout(yt.getBasicInfo(videoId), 10000, 'getBasicInfo').catch(() => null);
       }
     } else {
       info = await withTimeout(yt.getBasicInfo(videoId), 10000, 'getBasicInfo').catch(() => null);
     }
 
-    if (!info) return null;
+    if (!info || !info.basic_info || !info.basic_info.title) {
+      console.log(`[ytResolver] Rejecting ${videoId}: Missing basic_info or title`);
+      return null;
+    }
 
-    const title = pickFirst(
-      info.basic_info?.title,
-      info.title,
-      info.name,
-      'Unknown Title',
-    );
+    const title = info.basic_info.title;
 
     const author = pickFirst(
       info.basic_info?.author,
