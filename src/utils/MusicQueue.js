@@ -379,11 +379,12 @@ class MusicQueue {
 
     
     const filters = [];
-    filters.push('loudnorm=I=-14:TP=-1:LRA=11');
     if (this.reverb) {
       filters.push('aecho=0.8:0.88:60:0.4');
     }
-    args.push('-af', filters.join(','));
+    if (filters.length > 0) {
+      args.push('-af', filters.join(','));
+    }
 
     args.push(
       '-ac', '2',
@@ -438,7 +439,12 @@ class MusicQueue {
         if (text) console.error('[ffmpeg stderr]', text);
       });
 
-      const resource = createAudioResource(ffmpeg.stdout, {
+      // Create a PassThrough stream with a 2MB buffer to cache audio frames and prevent stuttering
+      const { PassThrough } = require('stream');
+      const bufferStream = new PassThrough({ highWaterMark: 1024 * 1024 * 2 });
+      ffmpeg.stdout.pipe(bufferStream);
+
+      const resource = createAudioResource(bufferStream, {
         inputType: StreamType.Raw,
         inlineVolume: true,
       });
