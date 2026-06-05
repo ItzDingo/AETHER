@@ -670,7 +670,6 @@ function extractSongFromSearchItem(item) {
   };
 
   console.log(`[ytResolver] Extracted from search: "${title}" by ${author} (${videoId})`);
-  cacheSong(videoId, result);
   return result;
 }
 
@@ -817,7 +816,16 @@ async function resolveSong(input) {
     return null;
   }
 
-  return await searchYouTubeMusic(input);
+  const searchResult = await searchYouTubeMusic(input);
+  if (searchResult && searchResult.videoId) {
+    console.log(`[ytResolver] Search resolved video ID ${searchResult.videoId}, fetching rich metadata...`);
+    const richSong = await buildSongDataFromInnertube(searchResult.videoId, true);
+    if (richSong) {
+      return richSong;
+    }
+  }
+
+  return searchResult;
 }
 
 module.exports = { resolveSong, formatDuration, getDirectStreamUrl, getInnertube, extractVideoId };
