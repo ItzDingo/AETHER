@@ -2,11 +2,13 @@ const { initOAuth, hasOAuthCredentials } = require('./ytOAuth');
 
 let innertubePromise = null;
 let guestInnertubePromise = null;
+let androidInnertubePromise = null;
 
-// Use 'WEB' client for metadata (song info, search, titles) — reliable and well-supported.
-// Use 'ANDROID' client ONLY for stream URL extraction (returns direct unciphered URLs).
-const METADATA_CLIENT_TYPE = 'WEB';
+// WEB client is used for YouTube Music search (music.search API)
+// ANDROID client is used for metadata (getBasicInfo) and stream URLs — it bypasses datacenter IP blocks
+const SEARCH_CLIENT_TYPE = 'WEB';
 const STREAM_CLIENT_TYPE = 'ANDROID';
+const METADATA_CLIENT_TYPE = 'ANDROID';
 
 function setupEvalShim(Platform) {
   if (Platform && Platform.shim) {
@@ -92,6 +94,7 @@ function getCookieString() {
   }
 }
 
+// getInnertube returns a WEB client — used primarily for music.search
 async function getInnertube() {
   if (!innertubePromise) {
     innertubePromise = (async () => {
@@ -103,9 +106,9 @@ async function getInnertube() {
 
       // Strategy 1: Try OAuth2 (persistent, never expires)
       if (hasOAuthCredentials()) {
-        console.log(`[ytResolver] Initializing youtubei.js with OAuth2 using client: ${METADATA_CLIENT_TYPE}...`);
+        console.log(`[ytResolver] Initializing youtubei.js with OAuth2 using client: ${SEARCH_CLIENT_TYPE}...`);
         try {
-          const yt = await withTimeout(Innertube.create({ client_type: METADATA_CLIENT_TYPE }), 15000, 'Innertube.create');
+          const yt = await withTimeout(Innertube.create({ client_type: SEARCH_CLIENT_TYPE }), 15000, 'Innertube.create');
           const success = await initOAuth(yt);
           if (success) {
             console.log('[ytResolver] ✅ youtubei.js initialized with OAuth2 successfully.');
@@ -120,9 +123,9 @@ async function getInnertube() {
       // Strategy 2: Try cookies (legacy fallback)
       const cookie = getCookieString();
       if (cookie) {
-        console.log(`[ytResolver] Initializing youtubei.js with cookies (length: ${cookie.length}) using client: ${METADATA_CLIENT_TYPE}`);
+        console.log(`[ytResolver] Initializing youtubei.js with cookies (length: ${cookie.length}) using client: ${SEARCH_CLIENT_TYPE}`);
         try {
-          const yt = await withTimeout(Innertube.create({ cookie, client_type: METADATA_CLIENT_TYPE }), 15000, 'Innertube.create (cookies)');
+          const yt = await withTimeout(Innertube.create({ cookie, client_type: SEARCH_CLIENT_TYPE }), 15000, 'Innertube.create (cookies)');
           return yt;
         } catch (err) {
           console.error('[ytResolver] Cookie-based initialization failed:', err.message);
@@ -130,8 +133,8 @@ async function getInnertube() {
       }
 
       // Strategy 3: Guest mode (no auth)
-      console.log(`[ytResolver] Initializing youtubei.js in guest mode (no auth) using client: ${METADATA_CLIENT_TYPE}.`);
-      return withTimeout(Innertube.create({ client_type: METADATA_CLIENT_TYPE }), 15000, 'Innertube.create (guest)');
+      console.log(`[ytResolver] Initializing youtubei.js in guest mode (no auth) using client: ${SEARCH_CLIENT_TYPE}.`);
+      return withTimeout(Innertube.create({ client_type: SEARCH_CLIENT_TYPE }), 15000, 'Innertube.create (guest)');
     })().catch((err) => {
       innertubePromise = null;
       throw err;
@@ -141,6 +144,7 @@ async function getInnertube() {
   return innertubePromise;
 }
 
+// getGuestInnertube returns a guest WEB client — fallback for search
 async function getGuestInnertube() {
   if (!guestInnertubePromise) {
     guestInnertubePromise = import('youtubei.js')
@@ -149,8 +153,8 @@ async function getGuestInnertube() {
         if (Log && typeof Log.setLevel === 'function') {
           Log.setLevel(1);
         }
-        console.log(`[ytResolver] Initializing guest youtubei.js instance (no cookies) using client: ${METADATA_CLIENT_TYPE}`);
-        return withTimeout(Innertube.create({ client_type: METADATA_CLIENT_TYPE }), 15000, 'Innertube.create (guest)');
+        console.log(`[ytResolver] Initializing guest youtubei.js instance (no cookies) using client: ${SEARCH_CLIENT_TYPE}`);
+        return withTimeout(Innertube.create({ client_type: SEARCH_CLIENT_TYPE }), 15000, 'Innertube.create (guest)');
       })
       .catch((err) => {
         guestInnertubePromise = null;
@@ -158,6 +162,26 @@ async function getGuestInnertube() {
       });
   }
   return guestInnertubePromise;
+}
+
+// getAndroidInnertube returns an ANDROID client — used for metadata (getBasicInfo)
+// ANDROID client bypasses datacenter IP blocking that causes 400 errors on WEB client
+async function getAndroidInnertube() {
+  if (!androidInnertubePromise) {
+    androidInnertubePromise = (async () => {
+      const { Innertube, Log, Platform } = await import('youtubei.js');
+      setupEvalShim(Platform);
+      if (Log && typeof Log.setLevel === 'function') {
+        Log.setLevel(1);
+      }
+      console.log(`[ytResolver] Initializing ANDROID youtubei.js instance for metadata...`);
+      return withTimeout(Innertube.create({ client_type: 'ANDROID' }), 15000, 'Innertube.create (ANDROID metadata)');
+    })().catch((err) => {
+      androidInnertubePromise = null;
+      throw err;
+    });
+  }
+  return androidInnertubePromise;
 }
 
 const YT_MUSIC_REGEX = /music\.youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})/i;
@@ -252,101 +276,59 @@ async function extractUrlFromInfo(info, ytInstance) {
 }
 
 async function getDirectStreamUrl(videoId) {
+  // Strategy 1: Reuse cached ANDROID instance (fastest — no Innertube.create overhead)
+  try {
+    console.log(`[ytResolver] Trying cached ANDROID client for stream URL of ${videoId}...`);
+    const ytAndroid = await getAndroidInnertube();
+    const info = await withTimeout(ytAndroid.getBasicInfo(videoId), 10000, 'getBasicInfo (cached ANDROID stream)').catch(() => null);
+    const url = await extractUrlFromInfo(info, ytAndroid);
+    if (url) {
+      console.log(`[ytResolver] ✅ Stream URL resolved via cached ANDROID.`);
+      return url;
+    }
+  } catch (err) {
+    console.warn(`[ytResolver] Cached ANDROID stream extraction failed:`, err.message);
+  }
+
   const { Innertube, Platform } = await import('youtubei.js');
   setupEvalShim(Platform);
-  
-  // Strategy 1: Guest STREAM_CLIENT_TYPE (MWEB) client (returns high-quality streams)
+
+  // Strategy 2: Fresh ANDROID client (in case cached one is stale)
   try {
-    console.log(`[ytResolver] Trying guest ${STREAM_CLIENT_TYPE} client for stream URL extraction of ${videoId}...`);
-    const ytGuestStream = await withTimeout(Innertube.create({ client_type: STREAM_CLIENT_TYPE }), 15000, `Innertube.create (guest ${STREAM_CLIENT_TYPE} stream)`);
-    const info = await withTimeout(ytGuestStream.getBasicInfo(videoId), 10000, `getBasicInfo (guest ${STREAM_CLIENT_TYPE} stream)`).catch(() => null);
-    const url = await extractUrlFromInfo(info, ytGuestStream);
+    console.log(`[ytResolver] Trying fresh ANDROID client for stream URL of ${videoId}...`);
+    const ytFresh = await withTimeout(Innertube.create({ client_type: 'ANDROID' }), 15000, 'Innertube.create (fresh ANDROID stream)');
+    const info = await withTimeout(ytFresh.getBasicInfo(videoId), 10000, 'getBasicInfo (fresh ANDROID stream)').catch(() => null);
+    const url = await extractUrlFromInfo(info, ytFresh);
     if (url) {
-      console.log(`[ytResolver] ✅ Stream URL resolved successfully via guest ${STREAM_CLIENT_TYPE}.`);
+      console.log(`[ytResolver] ✅ Stream URL resolved via fresh ANDROID.`);
       return url;
     }
   } catch (err) {
-    console.warn(`[ytResolver] Guest ${STREAM_CLIENT_TYPE} stream extraction failed:`, err.message);
+    console.warn(`[ytResolver] Fresh ANDROID stream extraction failed:`, err.message);
   }
 
-  // Strategy 2: Authenticated STREAM_CLIENT_TYPE (MWEB) client (if OAuth2 is set up, fallback for private/age-restricted)
-  if (hasOAuthCredentials()) {
-    try {
-      console.log(`[ytResolver] Trying authenticated ${STREAM_CLIENT_TYPE} client for stream URL extraction of ${videoId}...`);
-      const ytAuthStream = await withTimeout(Innertube.create({ client_type: STREAM_CLIENT_TYPE }), 15000, `Innertube.create (auth ${STREAM_CLIENT_TYPE} stream)`);
-      const { loadCredentials } = require('./ytOAuth');
-      const saved = loadCredentials();
-      if (saved) {
-        await ytAuthStream.session.signIn(saved);
-        const info = await withTimeout(ytAuthStream.getBasicInfo(videoId), 10000, `getBasicInfo (auth ${STREAM_CLIENT_TYPE} stream)`).catch(() => null);
-        const url = await extractUrlFromInfo(info, ytAuthStream);
-        if (url) {
-          console.log(`[ytResolver] ✅ Stream URL resolved successfully via authenticated ${STREAM_CLIENT_TYPE}.`);
-          return url;
-        }
-      }
-    } catch (err) {
-      console.warn(`[ytResolver] Authenticated ${STREAM_CLIENT_TYPE} stream extraction failed:`, err.message);
-    }
-  }
-
-  // Strategy 3: Guest ANDROID client (direct combined format fallback, e.g. itag 18)
+  // Strategy 3: Guest WEB client
   try {
-    console.log(`[ytResolver] Trying guest ANDROID client for stream URL extraction of ${videoId}...`);
-    const ytGuestAndroid = await withTimeout(Innertube.create({ client_type: 'ANDROID' }), 15000, 'Innertube.create (guest ANDROID stream)');
-    const info = await withTimeout(ytGuestAndroid.getBasicInfo(videoId), 10000, 'getBasicInfo (guest ANDROID stream)').catch(() => null);
-    const url = await extractUrlFromInfo(info, ytGuestAndroid);
-    if (url) {
-      console.log(`[ytResolver] ✅ Stream URL resolved successfully via guest ANDROID.`);
-      return url;
-    }
-  } catch (err) {
-    console.warn(`[ytResolver] Guest ANDROID stream extraction failed:`, err.message);
-  }
-
-  // Strategy 4: Authenticated ANDROID client
-  if (hasOAuthCredentials()) {
-    try {
-      console.log(`[ytResolver] Trying authenticated ANDROID client for stream URL extraction of ${videoId}...`);
-      const ytAuthAndroid = await withTimeout(Innertube.create({ client_type: 'ANDROID' }), 15000, 'Innertube.create (auth ANDROID stream)');
-      const { loadCredentials } = require('./ytOAuth');
-      const saved = loadCredentials();
-      if (saved) {
-        await ytAuthAndroid.session.signIn(saved);
-        const info = await withTimeout(ytAuthAndroid.getBasicInfo(videoId), 10000, 'getBasicInfo (auth ANDROID stream)').catch(() => null);
-        const url = await extractUrlFromInfo(info, ytAuthAndroid);
-        if (url) {
-          console.log(`[ytResolver] ✅ Stream URL resolved successfully via authenticated ANDROID.`);
-          return url;
-        }
-      }
-    } catch (err) {
-      console.warn(`[ytResolver] Authenticated ANDROID stream extraction failed:`, err.message);
-    }
-  }
-
-  // Strategy 5: Guest WEB client
-  try {
-    console.log(`[ytResolver] Trying guest WEB client for stream URL extraction of ${videoId}...`);
+    console.log(`[ytResolver] Trying guest WEB client for stream URL of ${videoId}...`);
     const ytGuestWeb = await withTimeout(Innertube.create({ client_type: 'WEB' }), 15000, 'Innertube.create (guest WEB stream)');
     const info = await withTimeout(ytGuestWeb.getBasicInfo(videoId), 10000, 'getBasicInfo (guest WEB stream)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytGuestWeb);
     if (url) {
-      console.log(`[ytResolver] ✅ Stream URL resolved successfully via guest WEB.`);
+      console.log(`[ytResolver] ✅ Stream URL resolved via guest WEB.`);
       return url;
     }
   } catch (err) {
     console.warn(`[ytResolver] Guest WEB stream extraction failed:`, err.message);
   }
 
-  // Strategy 6: Authenticated WEB client
+  // Strategy 4: Authenticated WEB client (OAuth2)
   try {
-    console.log(`[ytResolver] Trying authenticated WEB client for stream URL extraction of ${videoId}...`);
+    console.log(`[ytResolver] Trying authenticated WEB client for stream URL of ${videoId}...`);
     const ytAuthWeb = await getInnertube();
     const info = await withTimeout(ytAuthWeb.getBasicInfo(videoId), 10000, 'getBasicInfo (auth WEB stream)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytAuthWeb);
     if (url) {
-      console.log(`[ytResolver] ✅ Stream URL resolved successfully via authenticated WEB.`);
+      console.log(`[ytResolver] ✅ Stream URL resolved via authenticated WEB.`);
       return url;
     }
   } catch (err) {
@@ -416,6 +398,11 @@ function formatDuration(seconds) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+/**
+ * Build song metadata for a video ID.
+ * Strategy: ANDROID getBasicInfo first (bypasses datacenter IP blocks),
+ * then WEB client as fallback, then yt-search as last resort.
+ */
 async function buildSongDataFromInnertube(videoId, preferMusic = false) {
   const cached = getCachedSong(videoId);
   if (cached) {
@@ -423,131 +410,35 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
     return cached;
   }
 
-  const fetchWithInstance = async (ytInstance) => {
-    let info = null;
+  const extractMetadataFromInfo = (info) => {
+    if (!info || !info.basic_info || !info.basic_info.title) return null;
 
-    if (preferMusic) {
-      info = await withTimeout(ytInstance.music.getInfo(videoId), 10000, 'music.getInfo').catch((err) => {
-        console.warn(`[ytResolver] music.getInfo failed for ${videoId}: ${err.message || err}`);
-        return null;
-      });
-
-      if (info) {
-        const tabs = info.tabs?.map((t) => t.title || t.type) || [];
-        const playStatus = info.playability_status?.status;
-
-        if (tabs.includes('Details')) {
-          console.log(`[ytResolver] Rejected ${videoId}: has Details tab (podcast/talk)`);
-          return { rejected: true };
-        }
-
-        if (playStatus === 'UNPLAYABLE') {
-          const basicInfo = await withTimeout(ytInstance.getBasicInfo(videoId), 10000, 'getBasicInfo').catch(() => null);
-          const category = basicInfo?.basic_info?.category;
-          if (category !== 'Music') {
-            console.log(`[ytResolver] Rejected ${videoId}: UNPLAYABLE on music + category="${category}"`);
-            return { rejected: true };
-          }
-          console.log(`[ytResolver] Accepted ${videoId}: UNPLAYABLE on music but category=Music`);
-          info = basicInfo;
-        }
+    let releaseDateStr = null;
+    const page0 = info.page?.[0];
+    const microformat = page0?.microformat;
+    if (microformat) {
+      const pubDate = microformat.publish_date || microformat.upload_date;
+      if (pubDate && typeof pubDate === 'string') {
+        const dateMatch = pubDate.match(/^([0-9]{4}-[0-9]{2}-[0-9]{2})/);
+        if (dateMatch) releaseDateStr = dateMatch[1];
       }
-
-      if (!info || !info.basic_info || !info.basic_info.title) {
-        console.log(`[ytResolver] musicInfo missing or has no title for ${videoId}, falling back to getBasicInfo`);
-        info = await withTimeout(ytInstance.getBasicInfo(videoId), 10000, 'getBasicInfo').catch((err) => {
-          console.warn(`[ytResolver] getBasicInfo fallback failed for ${videoId}: ${err.message || err}`);
-          return null;
-        });
-      }
-    } else {
-      info = await withTimeout(ytInstance.getBasicInfo(videoId), 10000, 'getBasicInfo').catch((err) => {
-        console.warn(`[ytResolver] getBasicInfo failed for ${videoId}: ${err.message || err}`);
-        return null;
-      });
     }
 
-    if (info && info.basic_info && info.basic_info.title) {
-      let releaseDateStr = null;
-      const page0 = info.page?.[0];
-      const microformat = page0?.microformat;
-      if (microformat) {
-        const pubDate = microformat.publish_date || microformat.upload_date;
-        if (pubDate && typeof pubDate === 'string') {
-          const dateMatch = pubDate.match(/^([0-9]{4}-[0-9]{2}-[0-9]{2})/);
-          if (dateMatch) releaseDateStr = dateMatch[1];
-        }
-      }
-
-      if (!releaseDateStr) {
-        const desc = info.basic_info?.short_description || '';
-        const releaseMatch = desc.match(/Released on:[ \t]*([0-9]{4}-[0-9]{2}-[0-9]{2})/i);
-        if (releaseMatch) releaseDateStr = releaseMatch[1];
-      }
-
-      if (!releaseDateStr) {
-        releaseDateStr = pickFirst(
-          info.basic_info?.upload_date,
-          info.basic_info?.publish_date,
-          null
-        );
-      }
-
-      if (!releaseDateStr && preferMusic) {
-        console.log(`[ytResolver] Release date missing from musicInfo, falling back to getBasicInfo for ${videoId}`);
-        const basicInfo = await withTimeout(ytInstance.getBasicInfo(videoId), 8000, 'getBasicInfo').catch(() => null);
-        if (basicInfo) {
-          const bPage0 = basicInfo.page?.[0];
-          const bMicroformat = bPage0?.microformat;
-          if (bMicroformat) {
-            const pubDate = bMicroformat.publish_date || bMicroformat.upload_date;
-            if (pubDate && typeof pubDate === 'string') {
-              const dateMatch = pubDate.match(/^([0-9]{4}-[0-9]{2}-[0-9]{2})/);
-              if (dateMatch) releaseDateStr = dateMatch[1];
-            }
-          }
-          if (!releaseDateStr) {
-            const desc = basicInfo.basic_info?.short_description || '';
-            const releaseMatch = desc.match(/Released on:[ \t]*([0-9]{4}-[0-9]{2}-[0-9]{2})/i);
-            if (releaseMatch) releaseDateStr = releaseMatch[1];
-          }
-          if (!releaseDateStr) {
-            releaseDateStr = pickFirst(
-              basicInfo.basic_info?.upload_date,
-              basicInfo.basic_info?.publish_date,
-              null
-            );
-          }
-        }
-      }
-      info.resolvedReleaseDateStr = releaseDateStr;
+    if (!releaseDateStr) {
+      const desc = info.basic_info?.short_description || '';
+      const releaseMatch = desc.match(/Released on:[ \t]*([0-9]{4}-[0-9]{2}-[0-9]{2})/i);
+      if (releaseMatch) releaseDateStr = releaseMatch[1];
     }
 
-    return info;
-  };
-
-  try {
-    const yt = await getInnertube();
-    let info = await fetchWithInstance(yt);
-
-    // If fetch failed, try again with the guest instance (works for both OAuth2 and cookie auth)
-    if (!info || (!info.basic_info && !info.rejected)) {
-      console.log(`[ytResolver] Fetch failed with authenticated instance for ${videoId}. Retrying with guest instance...`);
-      const ytGuest = await getGuestInnertube();
-      info = await fetchWithInstance(ytGuest);
-    }
-
-    if (info && info.rejected) {
-      return null;
-    }
-
-    if (!info || !info.basic_info || !info.basic_info.title) {
-      console.log(`[ytResolver] Rejecting ${videoId}: Missing basic_info or title after all attempts`);
-      return null;
+    if (!releaseDateStr) {
+      releaseDateStr = pickFirst(
+        info.basic_info?.upload_date,
+        info.basic_info?.publish_date,
+        null
+      );
     }
 
     const title = info.basic_info.title;
-
     const author = pickFirst(
       info.basic_info?.author,
       info.author?.name,
@@ -579,9 +470,8 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
     );
 
     const url = `https://www.youtube.com/watch?v=${videoId}`;
-    const releaseDateStr = info.resolvedReleaseDateStr;
 
-    const result = {
+    return {
       title,
       author,
       duration: formatDuration(durationSec),
@@ -591,13 +481,51 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
       videoId,
       releaseDate: formatReleaseDate(releaseDateStr),
     };
+  };
 
-    cacheSong(videoId, result);
-    return result;
+  // Strategy 1: ANDROID client getBasicInfo (most reliable on datacenter IPs)
+  try {
+    console.log(`[ytResolver] Trying ANDROID getBasicInfo for metadata of ${videoId}...`);
+    const ytAndroid = await getAndroidInnertube();
+    const info = await withTimeout(ytAndroid.getBasicInfo(videoId), 10000, 'getBasicInfo (ANDROID)').catch((err) => {
+      console.warn(`[ytResolver] ANDROID getBasicInfo failed for ${videoId}: ${err.message}`);
+      return null;
+    });
+    const result = extractMetadataFromInfo(info);
+    if (result) {
+      console.log(`[ytResolver] ✅ Metadata resolved via ANDROID: "${result.title}" by ${result.author}`);
+      cacheSong(videoId, result);
+      return result;
+    }
   } catch (err) {
-    console.error(`[ytResolver] youtubei.js lookup failed for ${videoId}:`, err.message);
-    return null;
+    console.warn(`[ytResolver] ANDROID metadata attempt failed for ${videoId}:`, err.message);
   }
+
+  // Strategy 2: WEB client getBasicInfo (may fail on datacenter IPs but try anyway)
+  try {
+    console.log(`[ytResolver] Trying WEB getBasicInfo for metadata of ${videoId}...`);
+    const ytWeb = await getGuestInnertube();
+    const info = await withTimeout(ytWeb.getBasicInfo(videoId), 8000, 'getBasicInfo (WEB guest)').catch((err) => {
+      console.warn(`[ytResolver] WEB getBasicInfo failed for ${videoId}: ${err.message}`);
+      return null;
+    });
+    const result = extractMetadataFromInfo(info);
+    if (result) {
+      console.log(`[ytResolver] ✅ Metadata resolved via WEB: "${result.title}" by ${result.author}`);
+      cacheSong(videoId, result);
+      return result;
+    }
+  } catch (err) {
+    console.warn(`[ytResolver] WEB metadata attempt failed for ${videoId}:`, err.message);
+  }
+
+  // Strategy 3: yt-search (independent package, doesn't use youtubei.js)
+  console.log(`[ytResolver] youtubei.js metadata failed for ${videoId}, trying yt-search...`);
+  const ytSearchResult = await resolveWithYtSearch(videoId);
+  if (ytSearchResult) return ytSearchResult;
+
+  console.log(`[ytResolver] All metadata resolution methods failed for ${videoId}`);
+  return null;
 }
 
 /**
@@ -726,6 +654,7 @@ async function searchYouTubeMusic(query) {
     return items;
   };
 
+  // Strategy 1: YouTube Music search (WEB client)
   try {
     const yt = await getInnertube();
     let items = [];
@@ -733,67 +662,65 @@ async function searchYouTubeMusic(query) {
       items = await searchWithInstance(yt);
     } catch (err) {
       console.warn(`[ytResolver] Search with authenticated instance failed: ${err.message || err}`);
-      // Always retry with guest instance (not just when cookies exist)
       console.log('[ytResolver] Retrying search with guest instance...');
       const ytGuest = await getGuestInnertube();
       items = await searchWithInstance(ytGuest);
     }
 
-    if (items.length === 0) {
-      console.log(`[ytResolver] No matching songs/videos found on YouTube Music for "${query}"`);
-      return null;
-    }
-
-    // First: try to extract metadata directly from search results (fast, avoids 400 errors)
-    for (const item of items.slice(0, 5)) {
-      const song = extractSongFromSearchItem(item);
-      if (song) return song;
-    }
-
-    // Fallback: try buildSongDataFromInnertube for each result
-    console.log('[ytResolver] Could not extract from search items, trying getInfo fallback...');
-    for (const item of items.slice(0, 3)) {
-      if (!item.id) continue;
-      const song = await buildSongDataFromInnertube(item.id, true);
-      if (song) return song;
-    }
-
-    // Last resort: try yt-search with the first video ID
-    const firstId = items.find((i) => i.id)?.id;
-    if (firstId) {
-      const song = await resolveWithYtSearch(firstId);
-      if (song) return song;
-    }
-
-    return null;
-  } catch (err) {
-    console.error('[ytResolver] search error:', err.message || err);
-    // Final fallback: try yt-search text search
-    try {
-      const ytSearch = require('yt-search');
-      console.log(`[ytResolver] Falling back to yt-search text search for: "${query}"`);
-      const searchResult = await ytSearch(query);
-      if (searchResult && searchResult.videos && searchResult.videos.length > 0) {
-        const v = searchResult.videos[0];
-        const song = {
-          title: v.title,
-          author: v.author?.name || v.author || 'Unknown Artist',
-          duration: v.timestamp || formatDuration(v.seconds || 0),
-          durationSec: v.seconds || 0,
-          thumbnail: v.thumbnail || v.image || null,
-          url: v.url,
-          videoId: v.videoId,
-          releaseDate: v.ago || 'Unknown',
-        };
-        console.log(`[ytResolver] yt-search text search resolved: "${song.title}" by ${song.author}`);
-        cacheSong(song.videoId, song);
-        return song;
+    if (items.length > 0) {
+      // Extract metadata directly from search results (fast, avoids 400 errors)
+      for (const item of items.slice(0, 5)) {
+        const song = extractSongFromSearchItem(item);
+        if (song) return song;
       }
-    } catch (ytErr) {
-      console.error('[ytResolver] yt-search text search also failed:', ytErr.message);
+
+      // Fallback: try buildSongDataFromInnertube for each result
+      console.log('[ytResolver] Could not extract from search items, trying getInfo fallback...');
+      for (const item of items.slice(0, 3)) {
+        if (!item.id) continue;
+        const song = await buildSongDataFromInnertube(item.id, true);
+        if (song) return song;
+      }
+
+      // Last resort from YTMusic results: try yt-search with the first video ID
+      const firstId = items.find((i) => i.id)?.id;
+      if (firstId) {
+        const song = await resolveWithYtSearch(firstId);
+        if (song) return song;
+      }
+    } else {
+      console.log(`[ytResolver] No matching songs/videos found on YouTube Music for "${query}"`);
     }
-    return null;
+  } catch (err) {
+    console.error('[ytResolver] YouTube Music search error:', err.message || err);
   }
+
+  // Strategy 2: yt-search text search (completely independent, works even when YTMusic fails)
+  try {
+    const ytSearch = require('yt-search');
+    console.log(`[ytResolver] Falling back to yt-search text search for: "${query}"`);
+    const searchResult = await withTimeout(ytSearch(query), 10000, 'yt-search text');
+    if (searchResult && searchResult.videos && searchResult.videos.length > 0) {
+      const v = searchResult.videos[0];
+      const song = {
+        title: v.title,
+        author: v.author?.name || v.author || 'Unknown Artist',
+        duration: v.timestamp || formatDuration(v.seconds || 0),
+        durationSec: v.seconds || 0,
+        thumbnail: v.thumbnail || v.image || null,
+        url: v.url,
+        videoId: v.videoId,
+        releaseDate: v.ago || 'Unknown',
+      };
+      console.log(`[ytResolver] yt-search text search resolved: "${song.title}" by ${song.author}`);
+      cacheSong(song.videoId, song);
+      return song;
+    }
+  } catch (ytErr) {
+    console.error('[ytResolver] yt-search text search also failed:', ytErr.message);
+  }
+
+  return null;
 }
 
 async function resolveSong(input) {
@@ -808,14 +735,9 @@ async function resolveSong(input) {
       return cached;
     }
 
-    // Try youtubei.js first
+    // buildSongDataFromInnertube now internally tries ANDROID → WEB → yt-search
     const song = await buildSongDataFromInnertube(id, true);
     if (song) return song;
-
-    // Fallback: use yt-search to get metadata
-    console.log(`[ytResolver] youtubei.js failed for ${id}, trying yt-search fallback...`);
-    const ytSearchSong = await resolveWithYtSearch(id);
-    if (ytSearchSong) return ytSearchSong;
 
     console.log(`[ytResolver] All resolution methods failed for video ID ${id}. Rejecting.`);
     return null;

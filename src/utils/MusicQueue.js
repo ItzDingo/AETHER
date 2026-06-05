@@ -444,6 +444,43 @@ class MusicQueue {
       const bufferStream = new PassThrough({ highWaterMark: 1024 * 1024 * 2 });
       ffmpeg.stdout.pipe(bufferStream);
 
+      // Pre-buffer: wait for the PassThrough internal buffer to fill before starting playback.
+      // We check readableLength (bytes buffered but not yet consumed) to avoid consuming data.
+      const PRE_BUFFER_BYTES = 256 * 1024; // 256KB ≈ ~1.3s of 48kHz 16-bit stereo audio
+      const PRE_BUFFER_TIMEOUT = 4000; // max 4 seconds to wait
+      
+      await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          console.log(`[MusicQueue] Pre-buffer timeout (${bufferStream.readableLength} bytes buffered). Starting playback.`);
+          resolve();
+        }, PRE_BUFFER_TIMEOUT);
+        
+        const checkBuffer = () => {
+          if (bufferStream.readableLength >= PRE_BUFFER_BYTES) {
+            clearTimeout(timer);
+            bufferStream.removeListener('readable', checkBuffer);
+            console.log(`[MusicQueue] Pre-buffer filled (${bufferStream.readableLength} bytes). Starting playback.`);
+            resolve();
+          }
+        };
+        
+        // 'readable' fires when data is available in the internal buffer without consuming it
+        bufferStream.on('readable', checkBuffer);
+        
+        // Also resolve if the stream ends before reaching the target
+        bufferStream.once('end', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        ffmpeg.once('close', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        
+        // Initial check in case buffer already has data
+        checkBuffer();
+      });
+
       const resource = createAudioResource(bufferStream, {
         inputType: StreamType.Raw,
         inlineVolume: true,
