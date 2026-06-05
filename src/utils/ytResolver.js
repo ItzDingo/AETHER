@@ -180,55 +180,114 @@ function pickFirst(...values) {
  * Helper function to retrieve the direct stream URL for a given video ID.
  * Resolves the URL using an authenticated or guest Innertube instance.
  */
+async function extractUrlFromInfo(info, ytInstance) {
+  if (!info) return null;
+  
+  // 1. Try audio-only first
+  let format = info.chooseFormat({ type: 'audio', quality: 'best' });
+  if (format) {
+    if (format.url) return format.url;
+    if (format.signature_cipher || format.cipher) {
+      console.log(`[ytResolver] Deciphering audio-only stream...`);
+      const url = await format.decipher(ytInstance.session.player).catch(() => null);
+      if (url) return url;
+    }
+  }
+  
+  // 2. Try combined formats containing audio (e.g. itag 18)
+  const formats = [
+    ...(info.streaming_data?.formats || []),
+    ...(info.streaming_data?.adaptive_formats || [])
+  ];
+  
+  const rawCombined = formats.find(f => {
+    const mime = f.mime_type || '';
+    return (mime.includes('audio') || f.has_audio) && (f.url || f.signature_cipher || f.cipher);
+  });
+  
+  if (rawCombined) {
+    console.log(`[ytResolver] Falling back to combined format with audio (itag: ${rawCombined.itag}, mime: ${rawCombined.mime_type})`);
+    const combinedFormat = info.chooseFormat({ itag: rawCombined.itag });
+    if (combinedFormat) {
+      if (combinedFormat.url) return combinedFormat.url;
+      if (combinedFormat.signature_cipher || combinedFormat.cipher) {
+        console.log(`[ytResolver] Deciphering combined stream...`);
+        const url = await combinedFormat.decipher(ytInstance.session.player).catch(() => null);
+        if (url) return url;
+      }
+    }
+  }
+  
+  return null;
+}
+
 async function getDirectStreamUrl(videoId) {
+  const { Innertube } = await import('youtubei.js');
+  
+  // Strategy 1: Guest ANDROID client (proven to work without ciphers and avoids 400 errors)
   try {
-    // Use ANDROID client specifically for stream URL extraction (unciphered direct URLs)
-    const { Innertube } = await import('youtubei.js');
-    console.log(`[ytResolver] Creating ANDROID client for stream URL extraction of ${videoId}...`);
-    const ytStream = await withTimeout(Innertube.create({ client_type: STREAM_CLIENT_TYPE }), 15000, 'Innertube.create (stream)');
-    
-    // If we have OAuth2, authenticate this instance too
-    if (hasOAuthCredentials()) {
-      try {
-        const { loadCredentials } = require('./ytOAuth');
-        const saved = loadCredentials();
-        if (saved) {
-          await ytStream.session.signIn(saved);
-          console.log(`[ytResolver] ANDROID stream instance authenticated with OAuth2`);
-        }
-      } catch (authErr) {
-        console.warn(`[ytResolver] ANDROID stream instance OAuth2 failed, continuing as guest:`, authErr.message);
-      }
-    }
-
-    let info = await withTimeout(ytStream.getBasicInfo(videoId), 10000, 'getBasicInfo (stream)').catch((err) => {
-      console.warn(`[ytResolver] ANDROID getBasicInfo failed for ${videoId}:`, err.message);
-      return null;
-    });
-
-    // If ANDROID also fails, try WEB client for stream
-    if (!info) {
-      console.log(`[ytResolver] ANDROID stream failed for ${videoId}, trying WEB client...`);
-      const yt = await getInnertube();
-      info = await withTimeout(yt.getBasicInfo(videoId), 10000, 'getBasicInfo (WEB stream)').catch(() => null);
-    }
-
-    if (info) {
-      const format = info.chooseFormat({ type: 'audio', quality: 'best' });
-      if (format) {
-        if (format.url) {
-          return format.url;
-        }
-        if (format.signature_cipher || format.cipher) {
-          console.log(`[ytResolver] Stream is ciphered for ${videoId}. Deciphering...`);
-          const url = await format.decipher(ytStream.session.player);
-          if (url) return url;
-        }
-      }
+    console.log(`[ytResolver] Trying guest ANDROID client for stream URL extraction of ${videoId}...`);
+    const ytGuestAndroid = await withTimeout(Innertube.create({ client_type: STREAM_CLIENT_TYPE }), 15000, 'Innertube.create (guest stream)');
+    const info = await withTimeout(ytGuestAndroid.getBasicInfo(videoId), 10000, 'getBasicInfo (guest stream)').catch(() => null);
+    const url = await extractUrlFromInfo(info, ytGuestAndroid);
+    if (url) {
+      console.log(`[ytResolver] ✅ Stream URL resolved successfully via guest ANDROID.`);
+      return url;
     }
   } catch (err) {
-    console.error(`[ytResolver] Failed to get direct stream URL for ${videoId}:`, err.message);
+    console.warn(`[ytResolver] Guest ANDROID stream extraction failed:`, err.message);
   }
+
+  // Strategy 2: Authenticated ANDROID client (if OAuth2 is set up, fallback for private/age-restricted)
+  if (hasOAuthCredentials()) {
+    try {
+      console.log(`[ytResolver] Trying authenticated ANDROID client for stream URL extraction of ${videoId}...`);
+      const ytAuthAndroid = await withTimeout(Innertube.create({ client_type: STREAM_CLIENT_TYPE }), 15000, 'Innertube.create (auth stream)');
+      const { loadCredentials } = require('./ytOAuth');
+      const saved = loadCredentials();
+      if (saved) {
+        await ytAuthAndroid.session.signIn(saved);
+        const info = await withTimeout(ytAuthAndroid.getBasicInfo(videoId), 10000, 'getBasicInfo (auth stream)').catch(() => null);
+        const url = await extractUrlFromInfo(info, ytAuthAndroid);
+        if (url) {
+          console.log(`[ytResolver] ✅ Stream URL resolved successfully via authenticated ANDROID.`);
+          return url;
+        }
+      }
+    } catch (err) {
+      console.warn(`[ytResolver] Authenticated ANDROID stream extraction failed:`, err.message);
+    }
+  }
+
+  // Strategy 3: Guest WEB client (fallback)
+  try {
+    console.log(`[ytResolver] Trying guest WEB client for stream URL extraction of ${videoId}...`);
+    const ytGuestWeb = await withTimeout(Innertube.create({ client_type: 'WEB' }), 15000, 'Innertube.create (guest WEB stream)');
+    const info = await withTimeout(ytGuestWeb.getBasicInfo(videoId), 10000, 'getBasicInfo (guest WEB stream)').catch(() => null);
+    const url = await extractUrlFromInfo(info, ytGuestWeb);
+    if (url) {
+      console.log(`[ytResolver] ✅ Stream URL resolved successfully via guest WEB.`);
+      return url;
+    }
+  } catch (err) {
+    console.warn(`[ytResolver] Guest WEB stream extraction failed:`, err.message);
+  }
+
+  // Strategy 4: Authenticated WEB client (last resort fallback)
+  try {
+    console.log(`[ytResolver] Trying authenticated WEB client for stream URL extraction of ${videoId}...`);
+    const ytAuthWeb = await getInnertube();
+    const info = await withTimeout(ytAuthWeb.getBasicInfo(videoId), 10000, 'getBasicInfo (auth WEB stream)').catch(() => null);
+    const url = await extractUrlFromInfo(info, ytAuthWeb);
+    if (url) {
+      console.log(`[ytResolver] ✅ Stream URL resolved successfully via authenticated WEB.`);
+      return url;
+    }
+  } catch (err) {
+    console.warn(`[ytResolver] Authenticated WEB stream extraction failed:`, err.message);
+  }
+
+  console.error(`[ytResolver] ❌ Failed to get direct stream URL for ${videoId} using all strategies.`);
   return null;
 }
 
