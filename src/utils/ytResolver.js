@@ -274,6 +274,13 @@ function pickFirst(...values) {
  */
 async function extractUrlFromInfo(info, ytInstance) {
   if (!info) return null;
+
+  // Early exit if there's no streaming data at all — avoids the noisy
+  // "Streaming data not available" error from chooseFormat.
+  if (!info.streaming_data) {
+    console.log(`[ytResolver] No streaming_data in response, skipping format extraction.`);
+    return null;
+  }
   
   const formats = [
     ...(info.streaming_data?.formats || []),
@@ -320,7 +327,7 @@ async function extractUrlFromInfo(info, ytInstance) {
       }
     }
   } catch (err) {
-    console.warn(`[ytResolver] Error choosing/deciphering best audio format: ${err.message || err}`);
+    console.warn(`[ytResolver] chooseFormat fallback failed: ${err.message || err}`);
   }
 
   // 3. Last resort fallback: Try combined formats with ciphers
@@ -343,90 +350,43 @@ async function extractUrlFromInfo(info, ytInstance) {
 
 async function getDirectStreamUrl(videoId) {
   // Strategy 1: Reuse cached ANDROID instance (fastest — no Innertube.create overhead)
+  // ANDROID provides direct (unciphered) URLs that work from datacenter IPs.
   try {
     console.log(`[ytResolver] Trying cached ANDROID client for stream URL of ${videoId}...`);
     const ytAndroid = await getAndroidInnertube();
-    const info = await withTimeout(ytAndroid.getBasicInfo(videoId), 10000, 'getBasicInfo (cached ANDROID stream)').catch(() => null);
+    const info = await withTimeout(ytAndroid.getBasicInfo(videoId), 5000, 'getBasicInfo (cached ANDROID)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytAndroid);
-    const validUrl = await validateStreamUrl(url);
-    if (validUrl) {
-      console.log(`[ytResolver] ✅ Stream URL resolved via cached ANDROID.`);
-      return validUrl;
+    if (url) {
+      const validUrl = await validateStreamUrl(url);
+      if (validUrl) {
+        console.log(`[ytResolver] ✅ Stream URL resolved via cached ANDROID.`);
+        return validUrl;
+      }
     }
   } catch (err) {
     console.warn(`[ytResolver] Cached ANDROID stream extraction failed:`, err.message);
   }
 
-  const { Innertube, Platform } = await import('youtubei.js');
-  setupEvalShim(Platform);
-
-  // Strategy 2: Fresh ANDROID client (in case cached one is stale)
+  // Strategy 2: Guest WEB client (deciphers URLs, but validate to catch 403s on datacenter IPs)
   try {
-    console.log(`[ytResolver] Trying fresh ANDROID client for stream URL of ${videoId}...`);
-    const ytFresh = await withTimeout(Innertube.create({ client_type: 'ANDROID' }), 15000, 'Innertube.create (fresh ANDROID stream)');
-    if (hasOAuthCredentials()) {
-      await initOAuth(ytFresh).catch(() => {});
-    }
-    const info = await withTimeout(ytFresh.getBasicInfo(videoId), 10000, 'getBasicInfo (fresh ANDROID stream)').catch(() => null);
-    const url = await extractUrlFromInfo(info, ytFresh);
-    const validUrl = await validateStreamUrl(url);
-    if (validUrl) {
-      console.log(`[ytResolver] ✅ Stream URL resolved via fresh ANDROID.`);
-      return validUrl;
-    }
-  } catch (err) {
-    console.warn(`[ytResolver] Fresh ANDROID stream extraction failed:`, err.message);
-  }
-
-  // Strategy 3: Guest WEB client
-  try {
+    const { Innertube, Platform } = await import('youtubei.js');
+    setupEvalShim(Platform);
     console.log(`[ytResolver] Trying guest WEB client for stream URL of ${videoId}...`);
-    const ytGuestWeb = await withTimeout(Innertube.create({ client_type: 'WEB' }), 15000, 'Innertube.create (guest WEB stream)');
-    const info = await withTimeout(ytGuestWeb.getBasicInfo(videoId), 10000, 'getBasicInfo (guest WEB stream)').catch(() => null);
+    const ytGuestWeb = await withTimeout(Innertube.create({ client_type: 'WEB' }), 8000, 'Innertube.create (guest WEB)');
+    const info = await withTimeout(ytGuestWeb.getBasicInfo(videoId), 5000, 'getBasicInfo (guest WEB)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytGuestWeb);
-    const validUrl = await validateStreamUrl(url);
-    if (validUrl) {
-      console.log(`[ytResolver] ✅ Stream URL resolved via guest WEB.`);
-      return validUrl;
+    if (url) {
+      const validUrl = await validateStreamUrl(url);
+      if (validUrl) {
+        console.log(`[ytResolver] ✅ Stream URL resolved via guest WEB.`);
+        return validUrl;
+      }
     }
   } catch (err) {
     console.warn(`[ytResolver] Guest WEB stream extraction failed:`, err.message);
   }
 
-  // Strategy 4: Authenticated WEB client (OAuth2)
-  try {
-    console.log(`[ytResolver] Trying authenticated WEB client for stream URL of ${videoId}...`);
-    const ytAuthWeb = await getInnertube();
-    const info = await withTimeout(ytAuthWeb.getBasicInfo(videoId), 10000, 'getBasicInfo (auth WEB stream)').catch(() => null);
-    const url = await extractUrlFromInfo(info, ytAuthWeb);
-    const validUrl = await validateStreamUrl(url);
-    if (validUrl) {
-      console.log(`[ytResolver] ✅ Stream URL resolved via authenticated WEB.`);
-      return validUrl;
-    }
-  } catch (err) {
-    console.warn(`[ytResolver] Authenticated WEB stream extraction failed:`, err.message);
-  }
-
-  // Strategy 5: TVHTML5 client
-  try {
-    console.log(`[ytResolver] Trying TVHTML5 client for stream URL of ${videoId}...`);
-    const ytTv = await withTimeout(Innertube.create({ client_type: 'TVHTML5' }), 15000, 'Innertube.create (TVHTML5 stream)');
-    if (hasOAuthCredentials()) {
-      await initOAuth(ytTv).catch(() => {});
-    }
-    const info = await withTimeout(ytTv.getBasicInfo(videoId), 10000, 'getBasicInfo (TVHTML5 stream)').catch(() => null);
-    const url = await extractUrlFromInfo(info, ytTv);
-    const validUrl = await validateStreamUrl(url);
-    if (validUrl) {
-      console.log(`[ytResolver] ✅ Stream URL resolved via TVHTML5.`);
-      return validUrl;
-    }
-  } catch (err) {
-    console.warn(`[ytResolver] TVHTML5 stream extraction failed:`, err.message);
-  }
-
-  console.error(`[ytResolver] ❌ Failed to get direct stream URL for ${videoId} using all strategies.`);
+  console.warn(`[ytResolver] ⚠️ All youtubei.js strategies failed for ${videoId}. Falling back to yt-dlp.`);
   return null;
 }
 

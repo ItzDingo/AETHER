@@ -326,7 +326,7 @@ class MusicQueue {
     }
 
     const maxAttempts = 3;
-    const delays = [0, 2000, 4000];
+    const delays = [0, 1000, 2000];
     let lastError = null;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
