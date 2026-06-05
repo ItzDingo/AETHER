@@ -741,6 +741,59 @@ function extractSongFromSearchItem(item) {
 
   const videoId = item.id;
 
+  // === DEBUG: dump item structure to understand where duration lives ===
+  try {
+    const debugInfo = {
+      type: item.type,
+      item_type: item.item_type,
+      id: item.id,
+      keys: Object.keys(item).filter(k => !['thumbnails', 'thumbnail', 'menu', 'overlay', 'badges', 'flex_columns', 'fixed_columns'].includes(k)),
+      duration_type: typeof item.duration,
+      duration_value: item.duration,
+      duration_toString: item.duration?.toString?.(),
+      duration_text: item.duration?.text,
+      duration_seconds: item.duration?.seconds,
+      duration_total_seconds: item.duration?.total_seconds,
+      length: item.length,
+      length_seconds: item.length_seconds,
+      has_flex_columns: !!item.flex_columns,
+      flex_columns_count: item.flex_columns?.length,
+      has_fixed_columns: !!item.fixed_columns,
+      fixed_columns_count: item.fixed_columns?.length,
+      subtitle_text: item.subtitle?.text || item.subtitle?.toString?.(),
+    };
+    console.log(`[ytResolver] DEBUG search item structure: ${JSON.stringify(debugInfo)}`);
+
+    // Dump flex_columns details
+    if (item.flex_columns) {
+      for (let i = 0; i < item.flex_columns.length; i++) {
+        const col = item.flex_columns[i];
+        const colKeys = col ? Object.keys(col) : [];
+        const titleText = col?.title?.text || col?.title?.toString?.() || '(no title)';
+        console.log(`[ytResolver] DEBUG flex_columns[${i}]: keys=${JSON.stringify(colKeys)} title="${titleText}"`);
+      }
+    }
+
+    // Dump fixed_columns details
+    if (item.fixed_columns) {
+      for (let i = 0; i < item.fixed_columns.length; i++) {
+        const col = item.fixed_columns[i];
+        const colKeys = col ? Object.keys(col) : [];
+        const titleText = col?.title?.text || col?.title?.toString?.() || '(no title)';
+        console.log(`[ytResolver] DEBUG fixed_columns[${i}]: keys=${JSON.stringify(colKeys)} title="${titleText}"`);
+      }
+    }
+
+    // Dump subtitle runs
+    if (item.subtitle?.runs) {
+      const runTexts = item.subtitle.runs.map((r, i) => `[${i}]="${r?.text}"`).join(' ');
+      console.log(`[ytResolver] DEBUG subtitle runs: ${runTexts}`);
+    }
+  } catch (debugErr) {
+    console.log(`[ytResolver] DEBUG dump error: ${debugErr.message}`);
+  }
+  // === END DEBUG ===
+
   // Extract title
   let title = null;
   if (typeof item.title === 'string') title = item.title;
@@ -771,24 +824,65 @@ function extractSongFromSearchItem(item) {
 
   // Extract duration — MusicResponsiveListItem stores duration in several places
   let durationSec = 0;
+
+  // 1. item.duration (various shapes)
   if (item.duration) {
     if (typeof item.duration === 'number') durationSec = item.duration;
     else if (item.duration.seconds) durationSec = item.duration.seconds;
+    else if (item.duration.total_seconds) durationSec = item.duration.total_seconds;
     else if (item.duration.text) durationSec = normalizeDuration(item.duration.text);
     else if (typeof item.duration === 'string') durationSec = normalizeDuration(item.duration);
+    else {
+      // Try toString() — youtubei.js Text objects have toString()
+      const durStr = item.duration.toString?.();
+      if (durStr && /\d/.test(durStr)) {
+        durationSec = normalizeDuration(durStr);
+        if (durationSec > 0) console.log(`[ytResolver] Duration from duration.toString(): "${durStr}" = ${durationSec}s`);
+      }
+    }
   }
 
-  // Fallback: try to get duration from flex_columns (usually the last column has duration text)
+  // 2. item.length / item.length_seconds
+  if (!durationSec && item.length) {
+    durationSec = normalizeDuration(item.length);
+    if (durationSec > 0) console.log(`[ytResolver] Duration from item.length: ${item.length} = ${durationSec}s`);
+  }
+  if (!durationSec && item.length_seconds) {
+    durationSec = Number(item.length_seconds) || 0;
+    if (durationSec > 0) console.log(`[ytResolver] Duration from item.length_seconds: ${item.length_seconds}s`);
+  }
+
+  // 3. fixed_columns (MusicResponsiveListItemFixedColumn — typically has duration for songs)
+  if (!durationSec && item.fixed_columns) {
+    try {
+      for (const col of item.fixed_columns) {
+        const text = (col?.title?.text || col?.title?.toString?.() || '').trim();
+        if (text && /\d/.test(text)) {
+          // Try to extract duration-like pattern from the text
+          const match = text.match(/(\d{1,2}(?::\d{2}){1,2})/);
+          if (match) {
+            durationSec = normalizeDuration(match[1]);
+            if (durationSec > 0) {
+              console.log(`[ytResolver] Duration from fixed_columns: "${match[1]}" = ${durationSec}s`);
+              break;
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 4. flex_columns (last column sometimes has duration text)
   if (!durationSec && item.flex_columns) {
     try {
       for (let i = item.flex_columns.length - 1; i >= 0; i--) {
         const col = item.flex_columns[i];
-        const text = col?.title?.text || col?.title?.toString?.() || '';
-        // Duration looks like "3:45" or "1:02:33"
-        if (/^\d{1,2}(:\d{2}){1,2}$/.test(text.trim())) {
-          durationSec = normalizeDuration(text.trim());
+        const text = (col?.title?.text || col?.title?.toString?.() || '').trim();
+        const match = text.match(/(\d{1,2}(?::\d{2}){1,2})/);
+        if (match) {
+          durationSec = normalizeDuration(match[1]);
           if (durationSec > 0) {
-            console.log(`[ytResolver] Duration from flex_columns[${i}]: ${text.trim()} = ${durationSec}s`);
+            console.log(`[ytResolver] Duration from flex_columns[${i}]: "${match[1]}" = ${durationSec}s`);
             break;
           }
         }
@@ -796,15 +890,16 @@ function extractSongFromSearchItem(item) {
     } catch {}
   }
 
-  // Fallback: try subtitle runs (e.g. "Song • A.L.A • 3:21")
+  // 5. subtitle runs (e.g. "Song • A.L.A • 3:21")
   if (!durationSec && item.subtitle?.runs) {
     try {
       for (const run of item.subtitle.runs) {
         const text = (run?.text || '').trim();
-        if (/^\d{1,2}(:\d{2}){1,2}$/.test(text)) {
-          durationSec = normalizeDuration(text);
+        const match = text.match(/^(\d{1,2}(?::\d{2}){1,2})$/);
+        if (match) {
+          durationSec = normalizeDuration(match[1]);
           if (durationSec > 0) {
-            console.log(`[ytResolver] Duration from subtitle runs: ${text} = ${durationSec}s`);
+            console.log(`[ytResolver] Duration from subtitle runs: "${match[1]}" = ${durationSec}s`);
             break;
           }
         }
@@ -812,20 +907,14 @@ function extractSongFromSearchItem(item) {
     } catch {}
   }
 
-  // Fallback: try fixed_columns (some items have duration in fixed_columns)
-  if (!durationSec && item.fixed_columns) {
-    try {
-      for (const col of item.fixed_columns) {
-        const text = col?.title?.text || col?.title?.toString?.() || '';
-        if (/^\d{1,2}(:\d{2}){1,2}$/.test(text.trim())) {
-          durationSec = normalizeDuration(text.trim());
-          if (durationSec > 0) {
-            console.log(`[ytResolver] Duration from fixed_columns: ${text.trim()} = ${durationSec}s`);
-            break;
-          }
-        }
-      }
-    } catch {}
+  // 6. Full subtitle text — regex search for duration pattern
+  if (!durationSec) {
+    const subtitleFull = item.subtitle?.text || item.subtitle?.toString?.() || '';
+    const durMatch = subtitleFull.match(/(\d{1,2}:\d{2}(?::\d{2})?)/);
+    if (durMatch) {
+      durationSec = normalizeDuration(durMatch[1]);
+      if (durationSec > 0) console.log(`[ytResolver] Duration from full subtitle text: "${durMatch[1]}" = ${durationSec}s`);
+    }
   }
 
   // Extract year from subtitle (e.g. "Song • A.L.A • DIOR • 2026")
@@ -867,7 +956,7 @@ function extractSongFromSearchItem(item) {
     releaseDate,
   };
 
-  console.log(`[ytResolver] Extracted from search: "${title}" by ${author} | duration: ${formatDuration(durationSec)} | released: ${releaseDate} (${videoId})`);
+  console.log(`[ytResolver] Extracted from search: "${title}" by ${author} | duration: ${formatDuration(durationSec)} (${durationSec}s) | released: ${releaseDate} (${videoId})`);
   return result;
 }
 
