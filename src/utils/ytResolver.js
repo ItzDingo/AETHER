@@ -4,9 +4,9 @@ let innertubePromise = null;
 let guestInnertubePromise = null;
 
 // Use 'WEB' client for metadata (song info, search, titles) — reliable and well-supported.
-// Use 'MWEB' client ONLY for stream URL extraction (returns high-quality decipherable audio streams).
+// Use 'ANDROID' client ONLY for stream URL extraction (returns direct unciphered URLs).
 const METADATA_CLIENT_TYPE = 'WEB';
-const STREAM_CLIENT_TYPE = 'MWEB';
+const STREAM_CLIENT_TYPE = 'ANDROID';
 
 function setupEvalShim(Platform) {
   if (Platform && Platform.shim) {
@@ -193,41 +193,61 @@ function pickFirst(...values) {
 async function extractUrlFromInfo(info, ytInstance) {
   if (!info) return null;
   
-  // 1. Try audio-only first
-  let format = info.chooseFormat({ type: 'audio', quality: 'best' });
-  if (format) {
-    if (format.url) return format.url;
-    if (format.signature_cipher || format.cipher) {
-      console.log(`[ytResolver] Deciphering audio-only stream...`);
-      const url = await format.decipher(ytInstance.session.player).catch(() => null);
-      if (url) return url;
-    }
-  }
-  
-  // 2. Try combined formats containing audio (e.g. itag 18)
   const formats = [
     ...(info.streaming_data?.formats || []),
     ...(info.streaming_data?.adaptive_formats || [])
   ];
-  
-  const rawCombined = formats.find(f => {
+
+  // Filter for formats that actually contain audio
+  const audioCapableFormats = formats.filter(f => {
     const mime = f.mime_type || '';
-    return (mime.includes('audio') || f.has_audio) && (f.url || f.signature_cipher || f.cipher);
+    return mime.includes('audio') || f.has_audio;
   });
-  
-  if (rawCombined) {
-    console.log(`[ytResolver] Falling back to combined format with audio (itag: ${rawCombined.itag}, mime: ${rawCombined.mime_type})`);
-    const combinedFormat = info.chooseFormat({ itag: rawCombined.itag });
-    if (combinedFormat) {
-      if (combinedFormat.url) return combinedFormat.url;
-      if (combinedFormat.signature_cipher || combinedFormat.cipher) {
-        console.log(`[ytResolver] Deciphering combined stream...`);
-        const url = await combinedFormat.decipher(ytInstance.session.player).catch(() => null);
-        if (url) return url;
-      }
+
+  // 1. Try to find formats that have direct, unciphered URLs (highly reliable, no 403s)
+  // Check for itag 22 (720p combined with 192kbps AAC audio)
+  const itag22 = audioCapableFormats.find(f => f.itag === 22 && f.url);
+  if (itag22) {
+    console.log(`[ytResolver] Found direct URL for high-quality combined format (itag: 22)`);
+    return itag22.url;
+  }
+
+  // Check for itag 18 (360p combined with 96kbps AAC audio)
+  const itag18 = audioCapableFormats.find(f => f.itag === 18 && f.url);
+  if (itag18) {
+    console.log(`[ytResolver] Found direct URL for medium-quality combined format (itag: 18)`);
+    return itag18.url;
+  }
+
+  // Check for any other format that has a direct URL
+  const anyDirect = audioCapableFormats.find(f => f.url);
+  if (anyDirect) {
+    console.log(`[ytResolver] Found direct URL for format (itag: ${anyDirect.itag})`);
+    return anyDirect.url;
+  }
+
+  // 2. Fallback: Try audio-only formats with ciphers (needs deciphering)
+  let bestAudioFormat = info.chooseFormat({ type: 'audio', quality: 'best' });
+  if (bestAudioFormat) {
+    if (bestAudioFormat.url) return bestAudioFormat.url;
+    if (bestAudioFormat.signature_cipher || bestAudioFormat.cipher) {
+      console.log(`[ytResolver] Deciphering audio-only stream (itag: ${bestAudioFormat.itag})...`);
+      const url = await bestAudioFormat.decipher(ytInstance.session.player).catch(() => null);
+      if (url) return url;
     }
   }
-  
+
+  // 3. Last resort fallback: Try combined formats with ciphers
+  const combinedWithCipher = audioCapableFormats.find(f => f.signature_cipher || f.cipher);
+  if (combinedWithCipher) {
+    console.log(`[ytResolver] Deciphering combined format (itag: ${combinedWithCipher.itag})...`);
+    const combinedFormat = info.chooseFormat({ itag: combinedWithCipher.itag });
+    if (combinedFormat) {
+      const url = await combinedFormat.decipher(ytInstance.session.player).catch(() => null);
+      if (url) return url;
+    }
+  }
+
   return null;
 }
 
