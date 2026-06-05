@@ -741,59 +741,6 @@ function extractSongFromSearchItem(item) {
 
   const videoId = item.id;
 
-  // === DEBUG: dump item structure to understand where duration lives ===
-  try {
-    const debugInfo = {
-      type: item.type,
-      item_type: item.item_type,
-      id: item.id,
-      keys: Object.keys(item).filter(k => !['thumbnails', 'thumbnail', 'menu', 'overlay', 'badges', 'flex_columns', 'fixed_columns'].includes(k)),
-      duration_type: typeof item.duration,
-      duration_value: item.duration,
-      duration_toString: item.duration?.toString?.(),
-      duration_text: item.duration?.text,
-      duration_seconds: item.duration?.seconds,
-      duration_total_seconds: item.duration?.total_seconds,
-      length: item.length,
-      length_seconds: item.length_seconds,
-      has_flex_columns: !!item.flex_columns,
-      flex_columns_count: item.flex_columns?.length,
-      has_fixed_columns: !!item.fixed_columns,
-      fixed_columns_count: item.fixed_columns?.length,
-      subtitle_text: item.subtitle?.text || item.subtitle?.toString?.(),
-    };
-    console.log(`[ytResolver] DEBUG search item structure: ${JSON.stringify(debugInfo)}`);
-
-    // Dump flex_columns details
-    if (item.flex_columns) {
-      for (let i = 0; i < item.flex_columns.length; i++) {
-        const col = item.flex_columns[i];
-        const colKeys = col ? Object.keys(col) : [];
-        const titleText = col?.title?.text || col?.title?.toString?.() || '(no title)';
-        console.log(`[ytResolver] DEBUG flex_columns[${i}]: keys=${JSON.stringify(colKeys)} title="${titleText}"`);
-      }
-    }
-
-    // Dump fixed_columns details
-    if (item.fixed_columns) {
-      for (let i = 0; i < item.fixed_columns.length; i++) {
-        const col = item.fixed_columns[i];
-        const colKeys = col ? Object.keys(col) : [];
-        const titleText = col?.title?.text || col?.title?.toString?.() || '(no title)';
-        console.log(`[ytResolver] DEBUG fixed_columns[${i}]: keys=${JSON.stringify(colKeys)} title="${titleText}"`);
-      }
-    }
-
-    // Dump subtitle runs
-    if (item.subtitle?.runs) {
-      const runTexts = item.subtitle.runs.map((r, i) => `[${i}]="${r?.text}"`).join(' ');
-      console.log(`[ytResolver] DEBUG subtitle runs: ${runTexts}`);
-    }
-  } catch (debugErr) {
-    console.log(`[ytResolver] DEBUG dump error: ${debugErr.message}`);
-  }
-  // === END DEBUG ===
-
   // Extract title
   let title = null;
   if (typeof item.title === 'string') title = item.title;
@@ -814,7 +761,6 @@ function extractSongFromSearchItem(item) {
   } else if (item.author) {
     author = typeof item.author === 'string' ? item.author : (item.author?.name || item.author?.text || author);
   } else if (item.flex_columns) {
-    // Some items store artist in flex_columns[1]
     try {
       const artistCol = item.flex_columns[1];
       const artistText = artistCol?.title?.text || artistCol?.title?.toString?.() || '';
@@ -822,7 +768,7 @@ function extractSongFromSearchItem(item) {
     } catch {}
   }
 
-  // Extract duration — MusicResponsiveListItem stores duration in several places
+  // Extract duration — try every possible location on the search item
   let durationSec = 0;
 
   // 1. item.duration (various shapes)
@@ -833,64 +779,30 @@ function extractSongFromSearchItem(item) {
     else if (item.duration.text) durationSec = normalizeDuration(item.duration.text);
     else if (typeof item.duration === 'string') durationSec = normalizeDuration(item.duration);
     else {
-      // Try toString() — youtubei.js Text objects have toString()
       const durStr = item.duration.toString?.();
-      if (durStr && /\d/.test(durStr)) {
-        durationSec = normalizeDuration(durStr);
-        if (durationSec > 0) console.log(`[ytResolver] Duration from duration.toString(): "${durStr}" = ${durationSec}s`);
-      }
+      if (durStr && /\d/.test(durStr)) durationSec = normalizeDuration(durStr);
     }
   }
 
   // 2. item.length / item.length_seconds
-  if (!durationSec && item.length) {
-    durationSec = normalizeDuration(item.length);
-    if (durationSec > 0) console.log(`[ytResolver] Duration from item.length: ${item.length} = ${durationSec}s`);
-  }
-  if (!durationSec && item.length_seconds) {
-    durationSec = Number(item.length_seconds) || 0;
-    if (durationSec > 0) console.log(`[ytResolver] Duration from item.length_seconds: ${item.length_seconds}s`);
-  }
+  if (!durationSec && item.length) durationSec = normalizeDuration(item.length);
+  if (!durationSec && item.length_seconds) durationSec = Number(item.length_seconds) || 0;
 
-  // 3. fixed_columns (MusicResponsiveListItemFixedColumn — typically has duration for songs)
+  // 3. fixed_columns (MusicResponsiveListItemFixedColumn)
   if (!durationSec && item.fixed_columns) {
     try {
       for (const col of item.fixed_columns) {
         const text = (col?.title?.text || col?.title?.toString?.() || '').trim();
-        if (text && /\d/.test(text)) {
-          // Try to extract duration-like pattern from the text
-          const match = text.match(/(\d{1,2}(?::\d{2}){1,2})/);
-          if (match) {
-            durationSec = normalizeDuration(match[1]);
-            if (durationSec > 0) {
-              console.log(`[ytResolver] Duration from fixed_columns: "${match[1]}" = ${durationSec}s`);
-              break;
-            }
-          }
-        }
-      }
-    } catch {}
-  }
-
-  // 4. flex_columns (last column sometimes has duration text)
-  if (!durationSec && item.flex_columns) {
-    try {
-      for (let i = item.flex_columns.length - 1; i >= 0; i--) {
-        const col = item.flex_columns[i];
-        const text = (col?.title?.text || col?.title?.toString?.() || '').trim();
         const match = text.match(/(\d{1,2}(?::\d{2}){1,2})/);
         if (match) {
           durationSec = normalizeDuration(match[1]);
-          if (durationSec > 0) {
-            console.log(`[ytResolver] Duration from flex_columns[${i}]: "${match[1]}" = ${durationSec}s`);
-            break;
-          }
+          if (durationSec > 0) break;
         }
       }
     } catch {}
   }
 
-  // 5. subtitle runs (e.g. "Song • A.L.A • 3:21")
+  // 4. subtitle runs (e.g. "Song • A.L.A • 3:21")
   if (!durationSec && item.subtitle?.runs) {
     try {
       for (const run of item.subtitle.runs) {
@@ -898,23 +810,17 @@ function extractSongFromSearchItem(item) {
         const match = text.match(/^(\d{1,2}(?::\d{2}){1,2})$/);
         if (match) {
           durationSec = normalizeDuration(match[1]);
-          if (durationSec > 0) {
-            console.log(`[ytResolver] Duration from subtitle runs: "${match[1]}" = ${durationSec}s`);
-            break;
-          }
+          if (durationSec > 0) break;
         }
       }
     } catch {}
   }
 
-  // 6. Full subtitle text — regex search for duration pattern
+  // 5. Full subtitle text
   if (!durationSec) {
     const subtitleFull = item.subtitle?.text || item.subtitle?.toString?.() || '';
     const durMatch = subtitleFull.match(/(\d{1,2}:\d{2}(?::\d{2})?)/);
-    if (durMatch) {
-      durationSec = normalizeDuration(durMatch[1]);
-      if (durationSec > 0) console.log(`[ytResolver] Duration from full subtitle text: "${durMatch[1]}" = ${durationSec}s`);
-    }
+    if (durMatch) durationSec = normalizeDuration(durMatch[1]);
   }
 
   // Extract year from subtitle (e.g. "Song • A.L.A • DIOR • 2026")
@@ -930,7 +836,6 @@ function extractSongFromSearchItem(item) {
       }
     } catch {}
   }
-  // Also try item.year
   if (releaseDate === 'Unknown' && item.year) {
     releaseDate = String(item.year);
   }
@@ -958,6 +863,7 @@ function extractSongFromSearchItem(item) {
 
   console.log(`[ytResolver] Extracted from search: "${title}" by ${author} | duration: ${formatDuration(durationSec)} (${durationSec}s) | released: ${releaseDate} (${videoId})`);
   return result;
+
 }
 
 /**
@@ -1095,7 +1001,7 @@ async function resolveSong(input) {
       return cached;
     }
 
-    // buildSongDataFromInnertube now internally tries ANDROID → WEB → yt-search
+    // buildSongDataFromInnertube now internally tries ANDROID → WEB → yt-dlp → yt-search
     const song = await buildSongDataFromInnertube(id, true);
     if (song) return song;
 
@@ -1105,34 +1011,32 @@ async function resolveSong(input) {
 
   const searchResult = await searchYouTubeMusic(input);
   if (searchResult && searchResult.videoId) {
-    // Return search result immediately for fast playback start.
-    // If the search result has incomplete metadata (no duration/releaseDate),
-    // enrich it asynchronously in the background — the panel will update later.
     const hasDuration = searchResult.durationSec > 0;
     const hasRelease = searchResult.releaseDate && searchResult.releaseDate !== 'Unknown';
 
+    // If search result is missing duration or release date, do a fast yt-search
+    // lookup by videoId to fill in the gaps. This is synchronous (takes ~1-2s) and
+    // always returns reliable duration/timestamp data.
     if (!hasDuration || !hasRelease) {
-      console.log(`[ytResolver] Search result has partial metadata (duration: ${searchResult.durationSec}s, release: ${searchResult.releaseDate}). Enriching in background...`);
-      // Fire-and-forget background enrichment
-      buildSongDataFromInnertube(searchResult.videoId, true)
-        .then((richSong) => {
-          if (richSong) {
-            // Merge richer metadata into the cached song
-            if (richSong.durationSec > 0 && !hasDuration) {
-              searchResult.durationSec = richSong.durationSec;
-              searchResult.duration = richSong.duration;
-            }
-            if (richSong.releaseDate && richSong.releaseDate !== 'Unknown' && !hasRelease) {
-              searchResult.releaseDate = richSong.releaseDate;
-            }
-            // Update cache
-            cacheSong(searchResult.videoId, searchResult);
-            console.log(`[ytResolver] Background enrichment completed for ${searchResult.videoId}: duration=${searchResult.duration}, release=${searchResult.releaseDate}`);
+      console.log(`[ytResolver] Search result missing metadata (duration: ${searchResult.durationSec}s, release: ${searchResult.releaseDate}). Enriching via yt-search...`);
+      try {
+        const enriched = await resolveWithYtSearch(searchResult.videoId);
+        if (enriched) {
+          if (enriched.durationSec > 0 && !hasDuration) {
+            searchResult.durationSec = enriched.durationSec;
+            searchResult.duration = enriched.duration;
+            console.log(`[ytResolver] Enriched duration: ${searchResult.duration} (${searchResult.durationSec}s)`);
           }
-        })
-        .catch((err) => {
-          console.warn(`[ytResolver] Background enrichment failed for ${searchResult.videoId}:`, err.message);
-        });
+          if (enriched.releaseDate && enriched.releaseDate !== 'Unknown' && !hasRelease) {
+            searchResult.releaseDate = enriched.releaseDate;
+          }
+          if (enriched.thumbnail && !searchResult.thumbnail) {
+            searchResult.thumbnail = enriched.thumbnail;
+          }
+        }
+      } catch (err) {
+        console.warn(`[ytResolver] yt-search enrichment failed for ${searchResult.videoId}:`, err.message);
+      }
     }
 
     cacheSong(searchResult.videoId, searchResult);
