@@ -1,4 +1,45 @@
 const { initOAuth, hasOAuthCredentials } = require('./ytOAuth');
+const https = require('https');
+const http = require('http');
+
+/**
+ * Validate a stream URL by sending a HEAD request.
+ * Returns the URL if it responds with 2xx/3xx, or null if 403/etc.
+ * This prevents returning URLs that look valid but get blocked by YouTube's CDN on datacenter IPs.
+ */
+async function validateStreamUrl(url) {
+  if (!url) return null;
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      console.warn(`[ytResolver] URL validation timed out, accepting URL optimistically.`);
+      resolve(url);
+    }, 5000);
+    const mod = url.startsWith('https') ? https : http;
+    const req = mod.request(url, { method: 'HEAD', timeout: 4000 }, (res) => {
+      clearTimeout(timeout);
+      if (res.statusCode >= 200 && res.statusCode < 400) {
+        console.log(`[ytResolver] URL validation passed (HTTP ${res.statusCode}).`);
+        resolve(url);
+      } else {
+        console.warn(`[ytResolver] URL validation failed (HTTP ${res.statusCode}). Discarding URL.`);
+        resolve(null);
+      }
+      res.resume(); // drain response
+    });
+    req.on('error', (err) => {
+      clearTimeout(timeout);
+      console.warn(`[ytResolver] URL validation error: ${err.message}. Accepting URL optimistically.`);
+      resolve(url);
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      clearTimeout(timeout);
+      console.warn(`[ytResolver] URL validation socket timeout. Accepting URL optimistically.`);
+      resolve(url);
+    });
+    req.end();
+  });
+}
 
 let innertubePromise = null;
 let guestInnertubePromise = null;
@@ -307,9 +348,10 @@ async function getDirectStreamUrl(videoId) {
     const ytAndroid = await getAndroidInnertube();
     const info = await withTimeout(ytAndroid.getBasicInfo(videoId), 10000, 'getBasicInfo (cached ANDROID stream)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytAndroid);
-    if (url) {
+    const validUrl = await validateStreamUrl(url);
+    if (validUrl) {
       console.log(`[ytResolver] ✅ Stream URL resolved via cached ANDROID.`);
-      return url;
+      return validUrl;
     }
   } catch (err) {
     console.warn(`[ytResolver] Cached ANDROID stream extraction failed:`, err.message);
@@ -327,9 +369,10 @@ async function getDirectStreamUrl(videoId) {
     }
     const info = await withTimeout(ytFresh.getBasicInfo(videoId), 10000, 'getBasicInfo (fresh ANDROID stream)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytFresh);
-    if (url) {
+    const validUrl = await validateStreamUrl(url);
+    if (validUrl) {
       console.log(`[ytResolver] ✅ Stream URL resolved via fresh ANDROID.`);
-      return url;
+      return validUrl;
     }
   } catch (err) {
     console.warn(`[ytResolver] Fresh ANDROID stream extraction failed:`, err.message);
@@ -341,9 +384,10 @@ async function getDirectStreamUrl(videoId) {
     const ytGuestWeb = await withTimeout(Innertube.create({ client_type: 'WEB' }), 15000, 'Innertube.create (guest WEB stream)');
     const info = await withTimeout(ytGuestWeb.getBasicInfo(videoId), 10000, 'getBasicInfo (guest WEB stream)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytGuestWeb);
-    if (url) {
+    const validUrl = await validateStreamUrl(url);
+    if (validUrl) {
       console.log(`[ytResolver] ✅ Stream URL resolved via guest WEB.`);
-      return url;
+      return validUrl;
     }
   } catch (err) {
     console.warn(`[ytResolver] Guest WEB stream extraction failed:`, err.message);
@@ -355,9 +399,10 @@ async function getDirectStreamUrl(videoId) {
     const ytAuthWeb = await getInnertube();
     const info = await withTimeout(ytAuthWeb.getBasicInfo(videoId), 10000, 'getBasicInfo (auth WEB stream)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytAuthWeb);
-    if (url) {
+    const validUrl = await validateStreamUrl(url);
+    if (validUrl) {
       console.log(`[ytResolver] ✅ Stream URL resolved via authenticated WEB.`);
-      return url;
+      return validUrl;
     }
   } catch (err) {
     console.warn(`[ytResolver] Authenticated WEB stream extraction failed:`, err.message);
@@ -372,9 +417,10 @@ async function getDirectStreamUrl(videoId) {
     }
     const info = await withTimeout(ytTv.getBasicInfo(videoId), 10000, 'getBasicInfo (TVHTML5 stream)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytTv);
-    if (url) {
+    const validUrl = await validateStreamUrl(url);
+    if (validUrl) {
       console.log(`[ytResolver] ✅ Stream URL resolved via TVHTML5.`);
-      return url;
+      return validUrl;
     }
   } catch (err) {
     console.warn(`[ytResolver] TVHTML5 stream extraction failed:`, err.message);
