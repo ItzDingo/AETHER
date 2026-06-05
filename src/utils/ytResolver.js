@@ -895,7 +895,7 @@ async function resolveWithYtSearch(videoId) {
       return song;
     }
   } catch (err) {
-    console.warn(`[ytResolver] yt-search fallback failed for ${videoId}:`, err.message);
+    console.warn(`[ytResolver] yt-search fallback failed for ${videoId}:`, err?.message || err);
   }
   return null;
 }
@@ -983,7 +983,7 @@ async function searchYouTubeMusic(query) {
       return song;
     }
   } catch (ytErr) {
-    console.error('[ytResolver] yt-search text search also failed:', ytErr.message);
+    console.error('[ytResolver] yt-search text search also failed:', ytErr?.message || ytErr);
   }
 
   return null;
@@ -1018,9 +1018,9 @@ async function resolveSong(input) {
     // lookup by videoId to fill in the gaps. This is synchronous (takes ~1-2s) and
     // always returns reliable duration/timestamp data.
     if (!hasDuration || !hasRelease) {
-      console.log(`[ytResolver] Search result missing metadata (duration: ${searchResult.durationSec}s, release: ${searchResult.releaseDate}). Enriching via yt-search...`);
+      console.log(`[ytResolver] Search result missing metadata (duration: ${searchResult.durationSec}s, release: ${searchResult.releaseDate}). Enriching via buildSongDataFromInnertube...`);
       try {
-        const enriched = await resolveWithYtSearch(searchResult.videoId);
+        const enriched = await buildSongDataFromInnertube(searchResult.videoId, true);
         if (enriched) {
           if (enriched.durationSec > 0 && !hasDuration) {
             searchResult.durationSec = enriched.durationSec;
@@ -1035,7 +1035,7 @@ async function resolveSong(input) {
           }
         }
       } catch (err) {
-        console.warn(`[ytResolver] yt-search enrichment failed for ${searchResult.videoId}:`, err.message);
+        console.warn(`[ytResolver] Innertube enrichment failed for ${searchResult.videoId}:`, err?.message || err);
       }
     }
 
