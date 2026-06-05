@@ -99,23 +99,37 @@ async function downloadMp3(songUrl, songTitle) {
     console.log(`[downloader] Downloading and converting to MP3: ${usingDirectUrl ? '(direct stream URL)' : songUrl}`);
     console.log(`[downloader] Output path: ${outputPath}`);
 
+    let success = false;
     if (usingDirectUrl) {
-      const ffmpegArgs = [
-        '-y',
-        '-loglevel', 'error',
-        '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        '-i', downloadUrl,
-        '-vn',
-        '-c:a', 'libmp3lame',
-        '-q:a', '5',
-        outputPath
-      ];
-      console.log(`[downloader] Running ffmpeg directly on direct stream URL...`);
-      const ffmpegProcess = spawn(getFfmpegPath(), ffmpegArgs, {
-        windowsHide: true,
-      });
-      await waitForProcessOutput(ffmpegProcess);
-    } else {
+      try {
+        const ffmpegArgs = [
+          '-y',
+          '-loglevel', 'error',
+          '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          '-i', downloadUrl,
+          '-vn',
+          '-c:a', 'libmp3lame',
+          '-q:a', '5',
+          outputPath
+        ];
+        console.log(`[downloader] Running ffmpeg directly on direct stream URL...`);
+        const ffmpegProcess = spawn(getFfmpegPath(), ffmpegArgs, {
+          windowsHide: true,
+        });
+        await waitForProcessOutput(ffmpegProcess);
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1024) {
+          success = true;
+          console.log(`[downloader] Direct stream ffmpeg download succeeded.`);
+        } else {
+          console.warn('[downloader] ffmpeg completed but output file is missing or too small.');
+        }
+      } catch (err) {
+        console.error(`[downloader] Direct stream ffmpeg download failed: ${err.message}. falling back to yt-dlp...`);
+      }
+    }
+
+    if (!success) {
+      console.log(`[downloader] Downloading via yt-dlp: ${songUrl}`);
       const args = [
         '-f', 'bestaudio/best',
         '-x',
@@ -139,7 +153,7 @@ async function downloadMp3(songUrl, songTitle) {
         '--no-playlist',
         '--no-warnings',
         '--no-check-certificates',
-        downloadUrl
+        songUrl
       );
 
       const ytdlp = spawn(getYtdlpBinary(), args, {

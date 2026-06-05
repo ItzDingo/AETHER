@@ -11,11 +11,20 @@ async function validateStreamUrl(url) {
   if (!url) return null;
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
-      console.warn(`[ytResolver] URL validation timed out, accepting URL optimistically.`);
-      resolve(url);
-    }, 5000);
+      console.warn(`[ytResolver] URL validation timed out. Discarding URL.`);
+      resolve(null);
+    }, 6000);
+    
     const mod = url.startsWith('https') ? https : http;
-    const req = mod.request(url, { method: 'HEAD', timeout: 4000 }, (res) => {
+    const options = {
+      method: 'HEAD',
+      timeout: 4000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+      }
+    };
+
+    const req = mod.request(url, options, (res) => {
       clearTimeout(timeout);
       if (res.statusCode >= 200 && res.statusCode < 400) {
         console.log(`[ytResolver] URL validation passed (HTTP ${res.statusCode}).`);
@@ -26,17 +35,20 @@ async function validateStreamUrl(url) {
       }
       res.resume(); // drain response
     });
+
     req.on('error', (err) => {
       clearTimeout(timeout);
-      console.warn(`[ytResolver] URL validation error: ${err.message}. Accepting URL optimistically.`);
-      resolve(url);
+      console.warn(`[ytResolver] URL validation error: ${err.message}. Discarding URL.`);
+      resolve(null);
     });
+
     req.on('timeout', () => {
       req.destroy();
       clearTimeout(timeout);
-      console.warn(`[ytResolver] URL validation socket timeout. Accepting URL optimistically.`);
-      resolve(url);
+      console.warn(`[ytResolver] URL validation socket timeout. Discarding URL.`);
+      resolve(null);
     });
+
     req.end();
   });
 }
@@ -1046,4 +1058,4 @@ async function resolveSong(input) {
   return searchResult;
 }
 
-module.exports = { resolveSong, formatDuration, getDirectStreamUrl, getInnertube, extractVideoId };
+module.exports = { resolveSong, formatDuration, getDirectStreamUrl, getInnertube, getAndroidInnertube, getTvInnertube, extractVideoId };
