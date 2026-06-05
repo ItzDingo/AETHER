@@ -99,17 +99,33 @@ async function downloadMp3(songUrl, songTitle) {
     console.log(`[downloader] Downloading and converting to MP3: ${usingDirectUrl ? '(direct stream URL)' : songUrl}`);
     console.log(`[downloader] Output path: ${outputPath}`);
 
-    const args = [
-      '-f', 'bestaudio/best',
-      '-x',
-      '--audio-format', 'mp3',
-      '--audio-quality', '5',
-      '--ffmpeg-location', getFfmpegPath(),
-      '--user-agent',
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    ];
+    if (usingDirectUrl) {
+      const ffmpegArgs = [
+        '-y',
+        '-loglevel', 'error',
+        '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        '-i', downloadUrl,
+        '-vn',
+        '-c:a', 'libmp3lame',
+        '-q:a', '5',
+        outputPath
+      ];
+      console.log(`[downloader] Running ffmpeg directly on direct stream URL...`);
+      const ffmpegProcess = spawn(getFfmpegPath(), ffmpegArgs, {
+        windowsHide: true,
+      });
+      await waitForProcessOutput(ffmpegProcess);
+    } else {
+      const args = [
+        '-f', 'bestaudio/best',
+        '-x',
+        '--audio-format', 'mp3',
+        '--audio-quality', '5',
+        '--ffmpeg-location', getFfmpegPath(),
+        '--user-agent',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      ];
 
-    if (!usingDirectUrl) {
       const cookiesPath = path.join(__dirname, '..', '..', 'temp', 'cookies.txt');
       if (fs.existsSync(cookiesPath)) {
         console.log(`[downloader] Executing yt-dlp WITH cookies from: ${cookiesPath}`);
@@ -117,21 +133,21 @@ async function downloadMp3(songUrl, songTitle) {
       } else {
         console.warn('[downloader] WARNING: cookies.txt not found! Executing yt-dlp WITHOUT cookies.');
       }
+
+      args.push(
+        '-o', outputPath,
+        '--no-playlist',
+        '--no-warnings',
+        '--no-check-certificates',
+        downloadUrl
+      );
+
+      const ytdlp = spawn(getYtdlpBinary(), args, {
+        windowsHide: true,
+      });
+
+      await waitForProcessOutput(ytdlp);
     }
-
-    args.push(
-      '-o', outputPath,
-      '--no-playlist',
-      '--no-warnings',
-      '--no-check-certificates',
-      downloadUrl
-    );
-
-    const ytdlp = spawn(getYtdlpBinary(), args, {
-      windowsHide: true,
-    });
-
-    await waitForProcessOutput(ytdlp);
 
     if (fs.existsSync(outputPath)) {
       return outputPath;
