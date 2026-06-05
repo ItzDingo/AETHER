@@ -475,6 +475,112 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
   }
 }
 
+/**
+ * Extract song metadata directly from a YouTube Music search result item.
+ * This avoids calling getInfo/getBasicInfo which may fail with 400 errors.
+ */
+function extractSongFromSearchItem(item) {
+  if (!item || !item.id) return null;
+
+  const videoId = item.id;
+
+  // Extract title
+  let title = null;
+  if (typeof item.title === 'string') title = item.title;
+  else if (item.title?.text) title = item.title.text;
+  else if (item.title?.toString) title = item.title.toString();
+  else if (item.name) title = item.name;
+
+  if (!title) {
+    console.log(`[ytResolver] Search item ${videoId} has no title, skipping`);
+    return null;
+  }
+
+  // Extract artist
+  let author = 'Unknown Artist';
+  if (item.artists && item.artists.length > 0) {
+    const names = item.artists.map((a) => a?.name || a?.text || '').filter(Boolean);
+    if (names.length > 0) author = names.join(', ');
+  } else if (item.author) {
+    author = typeof item.author === 'string' ? item.author : (item.author?.name || item.author?.text || author);
+  } else if (item.flex_columns) {
+    // Some items store artist in flex_columns[1]
+    try {
+      const artistCol = item.flex_columns[1];
+      const artistText = artistCol?.title?.text || artistCol?.title?.toString?.() || '';
+      if (artistText) author = artistText;
+    } catch {}
+  }
+
+  // Extract duration
+  let durationSec = 0;
+  if (item.duration) {
+    if (typeof item.duration === 'number') durationSec = item.duration;
+    else if (item.duration.seconds) durationSec = item.duration.seconds;
+    else if (item.duration.text) durationSec = normalizeDuration(item.duration.text);
+    else if (typeof item.duration === 'string') durationSec = normalizeDuration(item.duration);
+  }
+
+  // Extract thumbnail
+  let thumbnail = null;
+  if (item.thumbnails && item.thumbnails.length > 0) {
+    thumbnail = item.thumbnails[0]?.url || null;
+  } else if (item.thumbnail) {
+    thumbnail = normalizeThumbnail(item.thumbnail);
+  }
+
+  const url = `https://www.youtube.com/watch?v=${videoId}`;
+
+  const result = {
+    title,
+    author,
+    duration: formatDuration(durationSec),
+    durationSec,
+    thumbnail,
+    url,
+    videoId,
+    releaseDate: 'Unknown',
+  };
+
+  console.log(`[ytResolver] Extracted from search: "${title}" by ${author} (${videoId})`);
+  cacheSong(videoId, result);
+  return result;
+}
+
+/**
+ * Fallback: use yt-search package to get video metadata by ID.
+ * Works independently of youtubei.js.
+ */
+async function resolveWithYtSearch(videoId) {
+  try {
+    const ytSearch = require('yt-search');
+    console.log(`[ytResolver] Trying yt-search fallback for ${videoId}...`);
+    const result = await withTimeout(
+      ytSearch({ videoId }),
+      10000,
+      'yt-search'
+    );
+    if (result && result.title) {
+      const song = {
+        title: result.title,
+        author: result.author?.name || result.author || 'Unknown Artist',
+        duration: result.timestamp || formatDuration(result.seconds || 0),
+        durationSec: result.seconds || 0,
+        thumbnail: result.thumbnail || result.image || null,
+        url: result.url || `https://www.youtube.com/watch?v=${videoId}`,
+        videoId,
+        releaseDate: result.ago || 'Unknown',
+      };
+      console.log(`[ytResolver] yt-search resolved: "${song.title}" by ${song.author}`);
+      cacheSong(videoId, song);
+      return song;
+    }
+  } catch (err) {
+    console.warn(`[ytResolver] yt-search fallback failed for ${videoId}:`, err.message);
+  }
+  return null;
+}
+
 async function searchYouTubeMusic(query) {
   const searchWithInstance = async (ytInstance) => {
     console.log(`[ytResolver] Searching YouTube Music for: "${query}"`);
@@ -502,13 +608,10 @@ async function searchYouTubeMusic(query) {
       items = await searchWithInstance(yt);
     } catch (err) {
       console.warn(`[ytResolver] Search with authenticated instance failed: ${err.message || err}`);
-      if (getCookieString()) {
-        console.log('[ytResolver] Retrying search with guest instance...');
-        const ytGuest = await getGuestInnertube();
-        items = await searchWithInstance(ytGuest);
-      } else {
-        throw err;
-      }
+      // Always retry with guest instance (not just when cookies exist)
+      console.log('[ytResolver] Retrying search with guest instance...');
+      const ytGuest = await getGuestInnertube();
+      items = await searchWithInstance(ytGuest);
     }
 
     if (items.length === 0) {
@@ -516,15 +619,54 @@ async function searchYouTubeMusic(query) {
       return null;
     }
 
+    // First: try to extract metadata directly from search results (fast, avoids 400 errors)
+    for (const item of items.slice(0, 5)) {
+      const song = extractSongFromSearchItem(item);
+      if (song) return song;
+    }
+
+    // Fallback: try buildSongDataFromInnertube for each result
+    console.log('[ytResolver] Could not extract from search items, trying getInfo fallback...');
     for (const item of items.slice(0, 3)) {
       if (!item.id) continue;
       const song = await buildSongDataFromInnertube(item.id, true);
       if (song) return song;
     }
 
+    // Last resort: try yt-search with the first video ID
+    const firstId = items.find((i) => i.id)?.id;
+    if (firstId) {
+      const song = await resolveWithYtSearch(firstId);
+      if (song) return song;
+    }
+
     return null;
   } catch (err) {
     console.error('[ytResolver] search error:', err.message || err);
+    // Final fallback: try yt-search text search
+    try {
+      const ytSearch = require('yt-search');
+      console.log(`[ytResolver] Falling back to yt-search text search for: "${query}"`);
+      const searchResult = await ytSearch(query);
+      if (searchResult && searchResult.videos && searchResult.videos.length > 0) {
+        const v = searchResult.videos[0];
+        const song = {
+          title: v.title,
+          author: v.author?.name || v.author || 'Unknown Artist',
+          duration: v.timestamp || formatDuration(v.seconds || 0),
+          durationSec: v.seconds || 0,
+          thumbnail: v.thumbnail || v.image || null,
+          url: v.url,
+          videoId: v.videoId,
+          releaseDate: v.ago || 'Unknown',
+        };
+        console.log(`[ytResolver] yt-search text search resolved: "${song.title}" by ${song.author}`);
+        cacheSong(song.videoId, song);
+        return song;
+      }
+    } catch (ytErr) {
+      console.error('[ytResolver] yt-search text search also failed:', ytErr.message);
+    }
     return null;
   }
 }
@@ -541,10 +683,16 @@ async function resolveSong(input) {
       return cached;
     }
 
+    // Try youtubei.js first
     const song = await buildSongDataFromInnertube(id, true);
     if (song) return song;
 
-    console.log(`[ytResolver] URL video ID ${id} is not registered on YouTube Music. Rejecting.`);
+    // Fallback: use yt-search to get metadata
+    console.log(`[ytResolver] youtubei.js failed for ${id}, trying yt-search fallback...`);
+    const ytSearchSong = await resolveWithYtSearch(id);
+    if (ytSearchSong) return ytSearchSong;
+
+    console.log(`[ytResolver] All resolution methods failed for video ID ${id}. Rejecting.`);
     return null;
   }
 

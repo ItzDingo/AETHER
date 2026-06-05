@@ -11,7 +11,7 @@ function buildPanel(queue) {
   const embed = new EmbedBuilder()
     .setColor(song ? '#1DB954' : '#2C2F33')
     .setAuthor({ name: '🎵 Now Playing' })
-    .setFooter({ text: 'AETHER Music Bot' });
+    .setFooter({ text: 'AETHER By Dingo' });
 
   if (song) {
     embed
