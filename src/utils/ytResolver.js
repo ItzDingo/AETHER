@@ -85,6 +85,53 @@ function withTimeout(promise, ms, label = 'operation') {
   ]);
 }
 
+function getYtdlpBinary() {
+  const fs = require('fs');
+  if (fs.existsSync('/usr/local/bin/yt-dlp')) {
+    return '/usr/local/bin/yt-dlp';
+  }
+  if (fs.existsSync('/usr/bin/yt-dlp')) {
+    return '/usr/bin/yt-dlp';
+  }
+
+  try {
+    const ytdl = require('youtube-dl-exec');
+    if (
+      ytdl.constants &&
+      ytdl.constants.YOUTUBE_DL_PATH &&
+      fs.existsSync(ytdl.constants.YOUTUBE_DL_PATH)
+    ) {
+      return ytdl.constants.YOUTUBE_DL_PATH;
+    }
+  } catch {}
+
+  return 'yt-dlp';
+}
+
+function waitForProcessOutput(proc) {
+  return new Promise((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    proc.once('error', reject);
+    proc.once('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `Process exited with code ${code}`));
+        return;
+      }
+      resolve({ stdout, stderr, code });
+    });
+  });
+}
+
 function formatReleaseDate(dateStr) {
   if (!dateStr) return 'Unknown';
   const cleaned = String(dateStr).trim();
@@ -557,7 +604,82 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
     };
   };
 
-  // Strategy 1: ANDROID client getBasicInfo (most reliable on datacenter IPs)
+  async function resolveWithYtdlp(videoId) {
+  try {
+    console.log(`[ytResolver] Trying yt-dlp metadata fallback for ${videoId}...`);
+    const path = require('path');
+    const fs = require('fs');
+    const { spawn } = require('child_process');
+    const url = `https://www.youtube.com/watch?v=${videoId}`;
+    const binary = getYtdlpBinary();
+
+    const args = [
+      '--dump-json',
+      '--no-playlist',
+      '--no-warnings',
+      '--no-check-certificates',
+    ];
+
+    // Try to use cookies from env or file
+    const cookiesEnv = process.env.YOUTUBE_COOKIES;
+    let tempCookiesPath = null;
+
+    if (cookiesEnv && cookiesEnv.trim()) {
+      const os = require('os');
+      tempCookiesPath = path.join(os.tmpdir(), `yt-metadata-cookies-${Date.now()}.txt`);
+      try {
+        fs.writeFileSync(tempCookiesPath, cookiesEnv, 'utf8');
+        args.push('--cookies', tempCookiesPath);
+      } catch (err) {
+        console.error('[ytResolver] Failed to write temp cookies for metadata:', err.message);
+        tempCookiesPath = null;
+      }
+    } else {
+      const localCookiesPath = path.join(__dirname, '..', '..', 'temp', 'cookies.txt');
+      if (fs.existsSync(localCookiesPath)) {
+        args.push('--cookies', localCookiesPath);
+      }
+    }
+
+    args.push(url);
+
+    const proc = spawn(binary, args, { windowsHide: true });
+    const { stdout } = await withTimeout(waitForProcessOutput(proc), 12000, 'yt-dlp metadata process');
+    
+    // Clean up temp cookies if created
+    if (tempCookiesPath && fs.existsSync(tempCookiesPath)) {
+      try { fs.unlinkSync(tempCookiesPath); } catch {}
+    }
+
+    const meta = JSON.parse(stdout);
+    if (meta && meta.title) {
+      let parsedReleaseDate = 'Unknown';
+      const rawDate = meta.release_date || meta.upload_date;
+      if (rawDate && rawDate.length === 8) {
+        parsedReleaseDate = `${rawDate.substring(0, 4)},${rawDate.substring(4, 6)},${rawDate.substring(6, 8)}`;
+      }
+
+      const song = {
+        title: meta.title,
+        author: meta.uploader || meta.artist || 'Unknown Artist',
+        duration: formatDuration(meta.duration || 0),
+        durationSec: meta.duration || 0,
+        thumbnail: meta.thumbnail || null,
+        url: url,
+        videoId: videoId,
+        releaseDate: formatReleaseDate(parsedReleaseDate),
+      };
+      console.log(`[ytResolver] yt-dlp metadata resolved: "${song.title}" by ${song.author} (${song.duration})`);
+      cacheSong(videoId, song);
+      return song;
+    }
+  } catch (err) {
+    console.warn(`[ytResolver] yt-dlp metadata fallback failed for ${videoId}:`, err.message);
+  }
+  return null;
+}
+
+// Strategy 1: ANDROID client getBasicInfo (most reliable on datacenter IPs)
   try {
     console.log(`[ytResolver] Trying ANDROID getBasicInfo for metadata of ${videoId}...`);
     const ytAndroid = await getAndroidInnertube();
@@ -593,7 +715,15 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
     console.warn(`[ytResolver] WEB metadata attempt failed for ${videoId}:`, err.message);
   }
 
-  // Strategy 3: yt-search (independent package, doesn't use youtubei.js)
+  // Strategy 3: yt-dlp metadata extraction fallback
+  try {
+    const ytdlResult = await resolveWithYtdlp(videoId);
+    if (ytdlResult) return ytdlResult;
+  } catch (err) {
+    console.warn(`[ytResolver] yt-dlp metadata attempt failed for ${videoId}:`, err.message);
+  }
+
+  // Strategy 4: yt-search (independent package, doesn't use youtubei.js)
   console.log(`[ytResolver] youtubei.js metadata failed for ${videoId}, trying yt-search...`);
   const ytSearchResult = await resolveWithYtSearch(videoId);
   if (ytSearchResult) return ytSearchResult;
