@@ -3,9 +3,10 @@ const { initOAuth, hasOAuthCredentials } = require('./ytOAuth');
 let innertubePromise = null;
 let guestInnertubePromise = null;
 
-// Use 'ANDROID' client type because it successfully returns direct stream URLs without cipher issues,
-// whereas WEB/YTMUSIC clients hide the URL or fail to provide direct URLs on newer YouTube versions.
-const DEFAULT_CLIENT_TYPE = 'ANDROID';
+// Use 'WEB' client for metadata (song info, search, titles) — reliable and well-supported.
+// Use 'ANDROID' client ONLY for stream URL extraction (returns direct unciphered URLs).
+const METADATA_CLIENT_TYPE = 'WEB';
+const STREAM_CLIENT_TYPE = 'ANDROID';
 
 const songCache = new Map();
 const SONG_CACHE_TTL = 10 * 60 * 1000;
@@ -93,9 +94,9 @@ async function getInnertube() {
 
       // Strategy 1: Try OAuth2 (persistent, never expires)
       if (hasOAuthCredentials()) {
-        console.log(`[ytResolver] Initializing youtubei.js with OAuth2 using client: ${DEFAULT_CLIENT_TYPE}...`);
+        console.log(`[ytResolver] Initializing youtubei.js with OAuth2 using client: ${METADATA_CLIENT_TYPE}...`);
         try {
-          const yt = await withTimeout(Innertube.create({ client_type: DEFAULT_CLIENT_TYPE }), 15000, 'Innertube.create');
+          const yt = await withTimeout(Innertube.create({ client_type: METADATA_CLIENT_TYPE }), 15000, 'Innertube.create');
           const success = await initOAuth(yt);
           if (success) {
             console.log('[ytResolver] ✅ youtubei.js initialized with OAuth2 successfully.');
@@ -110,9 +111,9 @@ async function getInnertube() {
       // Strategy 2: Try cookies (legacy fallback)
       const cookie = getCookieString();
       if (cookie) {
-        console.log(`[ytResolver] Initializing youtubei.js with cookies (length: ${cookie.length}) using client: ${DEFAULT_CLIENT_TYPE}`);
+        console.log(`[ytResolver] Initializing youtubei.js with cookies (length: ${cookie.length}) using client: ${METADATA_CLIENT_TYPE}`);
         try {
-          const yt = await withTimeout(Innertube.create({ cookie, client_type: DEFAULT_CLIENT_TYPE }), 15000, 'Innertube.create (cookies)');
+          const yt = await withTimeout(Innertube.create({ cookie, client_type: METADATA_CLIENT_TYPE }), 15000, 'Innertube.create (cookies)');
           return yt;
         } catch (err) {
           console.error('[ytResolver] Cookie-based initialization failed:', err.message);
@@ -120,8 +121,8 @@ async function getInnertube() {
       }
 
       // Strategy 3: Guest mode (no auth)
-      console.log(`[ytResolver] Initializing youtubei.js in guest mode (no auth) using client: ${DEFAULT_CLIENT_TYPE}.`);
-      return withTimeout(Innertube.create({ client_type: DEFAULT_CLIENT_TYPE }), 15000, 'Innertube.create (guest)');
+      console.log(`[ytResolver] Initializing youtubei.js in guest mode (no auth) using client: ${METADATA_CLIENT_TYPE}.`);
+      return withTimeout(Innertube.create({ client_type: METADATA_CLIENT_TYPE }), 15000, 'Innertube.create (guest)');
     })().catch((err) => {
       innertubePromise = null;
       throw err;
@@ -138,8 +139,8 @@ async function getGuestInnertube() {
         if (Log && typeof Log.setLevel === 'function') {
           Log.setLevel(1);
         }
-        console.log(`[ytResolver] Initializing guest youtubei.js instance (no cookies) using client: ${DEFAULT_CLIENT_TYPE}`);
-        return withTimeout(Innertube.create({ client_type: DEFAULT_CLIENT_TYPE }), 15000, 'Innertube.create (guest)');
+        console.log(`[ytResolver] Initializing guest youtubei.js instance (no cookies) using client: ${METADATA_CLIENT_TYPE}`);
+        return withTimeout(Innertube.create({ client_type: METADATA_CLIENT_TYPE }), 15000, 'Innertube.create (guest)');
       })
       .catch((err) => {
         guestInnertubePromise = null;
@@ -181,13 +182,35 @@ function pickFirst(...values) {
  */
 async function getDirectStreamUrl(videoId) {
   try {
-    const yt = await getInnertube();
-    let info = await withTimeout(yt.getBasicInfo(videoId), 10000, 'getBasicInfo').catch(() => null);
+    // Use ANDROID client specifically for stream URL extraction (unciphered direct URLs)
+    const { Innertube } = await import('youtubei.js');
+    console.log(`[ytResolver] Creating ANDROID client for stream URL extraction of ${videoId}...`);
+    const ytStream = await withTimeout(Innertube.create({ client_type: STREAM_CLIENT_TYPE }), 15000, 'Innertube.create (stream)');
+    
+    // If we have OAuth2, authenticate this instance too
+    if (hasOAuthCredentials()) {
+      try {
+        const { loadCredentials } = require('./ytOAuth');
+        const saved = loadCredentials();
+        if (saved) {
+          await ytStream.session.signIn(saved);
+          console.log(`[ytResolver] ANDROID stream instance authenticated with OAuth2`);
+        }
+      } catch (authErr) {
+        console.warn(`[ytResolver] ANDROID stream instance OAuth2 failed, continuing as guest:`, authErr.message);
+      }
+    }
 
-    if (!info && getCookieString()) {
-      console.log(`[ytResolver] getBasicInfo failed with authenticated instance for ${videoId}. Retrying with guest...`);
-      const ytGuest = await getGuestInnertube();
-      info = await withTimeout(ytGuest.getBasicInfo(videoId), 10000, 'getBasicInfo (guest)').catch(() => null);
+    let info = await withTimeout(ytStream.getBasicInfo(videoId), 10000, 'getBasicInfo (stream)').catch((err) => {
+      console.warn(`[ytResolver] ANDROID getBasicInfo failed for ${videoId}:`, err.message);
+      return null;
+    });
+
+    // If ANDROID also fails, try WEB client for stream
+    if (!info) {
+      console.log(`[ytResolver] ANDROID stream failed for ${videoId}, trying WEB client...`);
+      const yt = await getInnertube();
+      info = await withTimeout(yt.getBasicInfo(videoId), 10000, 'getBasicInfo (WEB stream)').catch(() => null);
     }
 
     if (info) {
@@ -198,7 +221,7 @@ async function getDirectStreamUrl(videoId) {
         }
         if (format.signature_cipher || format.cipher) {
           console.log(`[ytResolver] Stream is ciphered for ${videoId}. Deciphering...`);
-          const url = await format.decipher(yt.session.player);
+          const url = await format.decipher(ytStream.session.player);
           if (url) return url;
         }
       }
@@ -382,8 +405,8 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
     const yt = await getInnertube();
     let info = await fetchWithInstance(yt);
 
-    // If fetch failed and we have cookies, try again with the guest instance
-    if ((!info || (!info.basic_info && !info.rejected)) && getCookieString()) {
+    // If fetch failed, try again with the guest instance (works for both OAuth2 and cookie auth)
+    if (!info || (!info.basic_info && !info.rejected)) {
       console.log(`[ytResolver] Fetch failed with authenticated instance for ${videoId}. Retrying with guest instance...`);
       const ytGuest = await getGuestInnertube();
       info = await fetchWithInstance(ytGuest);

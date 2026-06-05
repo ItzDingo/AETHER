@@ -73,13 +73,12 @@ function startServer() {
           let channelSent = false;
           let lastError = null;
 
-          // Attempt 1: Send to DM
           try {
             const targetUser = await client.users.fetch(userId);
             const stream = fs.createReadStream(filePath);
             const attachment = new AttachmentBuilder(stream, { name: attachmentName });
             await targetUser.send({
-              content: `🎵 **${title}** by ${author}\n⬇️ Here is your MP3 file!`,
+              content: `🎵 **${title}** by ${author}\n⬇️ Here is your MP3 file`,
               files: [attachment]
             });
             dmSent = true;
@@ -88,7 +87,6 @@ function startServer() {
             lastError = err.message;
           }
 
-          // Attempt 2: If DM failed, send to channel
           if (!dmSent && channelId) {
             try {
               console.log(`[Sender Process] DM failed. Attempting channel send to ${channelId}...`);
