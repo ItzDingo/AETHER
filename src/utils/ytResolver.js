@@ -174,8 +174,25 @@ async function getAndroidInnertube() {
       if (Log && typeof Log.setLevel === 'function') {
         Log.setLevel(1);
       }
-      console.log(`[ytResolver] Initializing ANDROID youtubei.js instance for metadata...`);
-      return withTimeout(Innertube.create({ client_type: 'ANDROID' }), 15000, 'Innertube.create (ANDROID metadata)');
+      
+      // Try to initialize with OAuth2 if credentials exist to avoid datacenter IP bans/blocks
+      if (hasOAuthCredentials()) {
+        console.log(`[ytResolver] Initializing ANDROID youtubei.js instance with OAuth2...`);
+        try {
+          const yt = await withTimeout(Innertube.create({ client_type: 'ANDROID' }), 15000, 'Innertube.create (ANDROID OAuth)');
+          const success = await initOAuth(yt);
+          if (success) {
+            console.log('[ytResolver] ✅ ANDROID youtubei.js initialized with OAuth2 successfully.');
+            return yt;
+          }
+          console.warn('[ytResolver] ANDROID OAuth2 sign-in returned false. Trying guest ANDROID fallback...');
+        } catch (err) {
+          console.error('[ytResolver] ANDROID OAuth2 initialization failed:', err.message);
+        }
+      }
+
+      console.log(`[ytResolver] Initializing guest ANDROID youtubei.js instance...`);
+      return withTimeout(Innertube.create({ client_type: 'ANDROID' }), 15000, 'Innertube.create (guest ANDROID)');
     })().catch((err) => {
       androidInnertubePromise = null;
       throw err;
@@ -251,24 +268,32 @@ async function extractUrlFromInfo(info, ytInstance) {
   }
 
   // 2. Fallback: Try audio-only formats with ciphers (needs deciphering)
-  let bestAudioFormat = info.chooseFormat({ type: 'audio', quality: 'best' });
-  if (bestAudioFormat) {
-    if (bestAudioFormat.url) return bestAudioFormat.url;
-    if (bestAudioFormat.signature_cipher || bestAudioFormat.cipher) {
-      console.log(`[ytResolver] Deciphering audio-only stream (itag: ${bestAudioFormat.itag})...`);
-      const url = await bestAudioFormat.decipher(ytInstance.session.player).catch(() => null);
-      if (url) return url;
+  try {
+    let bestAudioFormat = info.chooseFormat({ type: 'audio', quality: 'best' });
+    if (bestAudioFormat) {
+      if (bestAudioFormat.url) return bestAudioFormat.url;
+      if (bestAudioFormat.signature_cipher || bestAudioFormat.cipher) {
+        console.log(`[ytResolver] Deciphering audio-only stream (itag: ${bestAudioFormat.itag})...`);
+        const url = await bestAudioFormat.decipher(ytInstance.session.player).catch(() => null);
+        if (url) return url;
+      }
     }
+  } catch (err) {
+    console.warn(`[ytResolver] Error choosing/deciphering best audio format: ${err.message || err}`);
   }
 
   // 3. Last resort fallback: Try combined formats with ciphers
   const combinedWithCipher = audioCapableFormats.find(f => f.signature_cipher || f.cipher);
   if (combinedWithCipher) {
     console.log(`[ytResolver] Deciphering combined format (itag: ${combinedWithCipher.itag})...`);
-    const combinedFormat = info.chooseFormat({ itag: combinedWithCipher.itag });
-    if (combinedFormat) {
-      const url = await combinedFormat.decipher(ytInstance.session.player).catch(() => null);
-      if (url) return url;
+    try {
+      const combinedFormat = info.chooseFormat({ itag: combinedWithCipher.itag });
+      if (combinedFormat) {
+        const url = await combinedFormat.decipher(ytInstance.session.player).catch(() => null);
+        if (url) return url;
+      }
+    } catch (err) {
+      console.warn(`[ytResolver] Error choosing/deciphering combined format: ${err.message || err}`);
     }
   }
 
@@ -297,6 +322,9 @@ async function getDirectStreamUrl(videoId) {
   try {
     console.log(`[ytResolver] Trying fresh ANDROID client for stream URL of ${videoId}...`);
     const ytFresh = await withTimeout(Innertube.create({ client_type: 'ANDROID' }), 15000, 'Innertube.create (fresh ANDROID stream)');
+    if (hasOAuthCredentials()) {
+      await initOAuth(ytFresh).catch(() => {});
+    }
     const info = await withTimeout(ytFresh.getBasicInfo(videoId), 10000, 'getBasicInfo (fresh ANDROID stream)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytFresh);
     if (url) {
@@ -333,6 +361,23 @@ async function getDirectStreamUrl(videoId) {
     }
   } catch (err) {
     console.warn(`[ytResolver] Authenticated WEB stream extraction failed:`, err.message);
+  }
+
+  // Strategy 5: TVHTML5 client
+  try {
+    console.log(`[ytResolver] Trying TVHTML5 client for stream URL of ${videoId}...`);
+    const ytTv = await withTimeout(Innertube.create({ client_type: 'TVHTML5' }), 15000, 'Innertube.create (TVHTML5 stream)');
+    if (hasOAuthCredentials()) {
+      await initOAuth(ytTv).catch(() => {});
+    }
+    const info = await withTimeout(ytTv.getBasicInfo(videoId), 10000, 'getBasicInfo (TVHTML5 stream)').catch(() => null);
+    const url = await extractUrlFromInfo(info, ytTv);
+    if (url) {
+      console.log(`[ytResolver] ✅ Stream URL resolved via TVHTML5.`);
+      return url;
+    }
+  } catch (err) {
+    console.warn(`[ytResolver] TVHTML5 stream extraction failed:`, err.message);
   }
 
   console.error(`[ytResolver] ❌ Failed to get direct stream URL for ${videoId} using all strategies.`);
