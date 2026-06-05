@@ -145,23 +145,7 @@ async function getInnertube() {
         Log.setLevel(1);
       }
 
-      // Strategy 1: Try OAuth2 (persistent, never expires)
-      if (hasOAuthCredentials()) {
-        console.log(`[ytResolver] Initializing youtubei.js with OAuth2 using client: ${SEARCH_CLIENT_TYPE}...`);
-        try {
-          const yt = await withTimeout(Innertube.create({ client_type: SEARCH_CLIENT_TYPE }), 15000, 'Innertube.create');
-          const success = await initOAuth(yt);
-          if (success) {
-            console.log('[ytResolver] ✅ youtubei.js initialized with OAuth2 successfully.');
-            return yt;
-          }
-          console.warn('[ytResolver] OAuth2 sign-in returned false. Trying fallbacks...');
-        } catch (err) {
-          console.error('[ytResolver] OAuth2 initialization failed:', err.message);
-        }
-      }
-
-      // Strategy 2: Try cookies (legacy fallback)
+      // Strategy 1: Try cookies (legacy fallback)
       const cookie = getCookieString();
       if (cookie) {
         console.log(`[ytResolver] Initializing youtubei.js with cookies (length: ${cookie.length}) using client: ${SEARCH_CLIENT_TYPE}`);
@@ -173,7 +157,7 @@ async function getInnertube() {
         }
       }
 
-      // Strategy 3: Guest mode (no auth)
+      // Strategy 2: Guest mode (no auth)
       console.log(`[ytResolver] Initializing youtubei.js in guest mode (no auth) using client: ${SEARCH_CLIENT_TYPE}.`);
       return withTimeout(Innertube.create({ client_type: SEARCH_CLIENT_TYPE }), 15000, 'Innertube.create (guest)');
     })().catch((err) => {
@@ -205,8 +189,10 @@ async function getGuestInnertube() {
   return guestInnertubePromise;
 }
 
-// getAndroidInnertube returns an ANDROID client — used for metadata (getBasicInfo)
-// ANDROID client bypasses datacenter IP blocking that causes 400 errors on WEB client
+// getAndroidInnertube returns a guest ANDROID client — used for metadata (getBasicInfo)
+// ANDROID client bypasses datacenter IP blocking that causes 400 errors on WEB client.
+// Note: We MUST run it in guest mode because signing in with TV-scoped OAuth2 tokens
+// causes all ANDROID player requests to fail with HTTP 400.
 async function getAndroidInnertube() {
   if (!androidInnertubePromise) {
     androidInnertubePromise = (async () => {
@@ -215,23 +201,6 @@ async function getAndroidInnertube() {
       if (Log && typeof Log.setLevel === 'function') {
         Log.setLevel(1);
       }
-      
-      // Try to initialize with OAuth2 if credentials exist to avoid datacenter IP bans/blocks
-      if (hasOAuthCredentials()) {
-        console.log(`[ytResolver] Initializing ANDROID youtubei.js instance with OAuth2...`);
-        try {
-          const yt = await withTimeout(Innertube.create({ client_type: 'ANDROID' }), 15000, 'Innertube.create (ANDROID OAuth)');
-          const success = await initOAuth(yt);
-          if (success) {
-            console.log('[ytResolver] ✅ ANDROID youtubei.js initialized with OAuth2 successfully.');
-            return yt;
-          }
-          console.warn('[ytResolver] ANDROID OAuth2 sign-in returned false. Trying guest ANDROID fallback...');
-        } catch (err) {
-          console.error('[ytResolver] ANDROID OAuth2 initialization failed:', err.message);
-        }
-      }
-
       console.log(`[ytResolver] Initializing guest ANDROID youtubei.js instance...`);
       return withTimeout(Innertube.create({ client_type: 'ANDROID' }), 15000, 'Innertube.create (guest ANDROID)');
     })().catch((err) => {
@@ -240,6 +209,43 @@ async function getAndroidInnertube() {
     });
   }
   return androidInnertubePromise;
+}
+
+let tvInnertubePromise = null;
+
+// getTvInnertube returns a TVHTML5 client authenticated with OAuth2 if credentials exist
+async function getTvInnertube() {
+  if (!tvInnertubePromise) {
+    tvInnertubePromise = (async () => {
+      const { Innertube, Log, Platform } = await import('youtubei.js');
+      setupEvalShim(Platform);
+      if (Log && typeof Log.setLevel === 'function') {
+        Log.setLevel(1);
+      }
+
+      if (hasOAuthCredentials()) {
+        console.log(`[ytResolver] Initializing TVHTML5 youtubei.js instance with OAuth2...`);
+        try {
+          const yt = await withTimeout(Innertube.create({ client_type: 'TVHTML5' }), 15000, 'Innertube.create (TVHTML5 OAuth)');
+          const success = await initOAuth(yt);
+          if (success) {
+            console.log('[ytResolver] ✅ TVHTML5 youtubei.js initialized with OAuth2 successfully.');
+            return yt;
+          }
+          console.warn('[ytResolver] TVHTML5 OAuth2 sign-in returned false. Trying guest TVHTML5 fallback...');
+        } catch (err) {
+          console.error('[ytResolver] TVHTML5 OAuth2 initialization failed:', err.message);
+        }
+      }
+
+      console.log(`[ytResolver] Initializing guest TVHTML5 youtubei.js instance...`);
+      return withTimeout(Innertube.create({ client_type: 'TVHTML5' }), 15000, 'Innertube.create (guest TVHTML5)');
+    })().catch((err) => {
+      tvInnertubePromise = null;
+      throw err;
+    });
+  }
+  return tvInnertubePromise;
 }
 
 const YT_MUSIC_REGEX = /music\.youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})/i;
@@ -349,25 +355,42 @@ async function extractUrlFromInfo(info, ytInstance) {
 }
 
 async function getDirectStreamUrl(videoId) {
-  // Strategy 1: Reuse cached ANDROID instance (fastest — no Innertube.create overhead)
+  // Strategy 1: Reuse cached Guest ANDROID instance (fastest & highly reliable)
   // ANDROID provides direct (unciphered) URLs that work from datacenter IPs.
   try {
-    console.log(`[ytResolver] Trying cached ANDROID client for stream URL of ${videoId}...`);
+    console.log(`[ytResolver] Trying cached Guest ANDROID client for stream URL of ${videoId}...`);
     const ytAndroid = await getAndroidInnertube();
     const info = await withTimeout(ytAndroid.getBasicInfo(videoId), 5000, 'getBasicInfo (cached ANDROID)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytAndroid);
     if (url) {
       const validUrl = await validateStreamUrl(url);
       if (validUrl) {
-        console.log(`[ytResolver] ✅ Stream URL resolved via cached ANDROID.`);
+        console.log(`[ytResolver] ✅ Stream URL resolved via cached Guest ANDROID.`);
         return validUrl;
       }
     }
   } catch (err) {
-    console.warn(`[ytResolver] Cached ANDROID stream extraction failed:`, err.message);
+    console.warn(`[ytResolver] Cached Guest ANDROID stream extraction failed:`, err.message);
   }
 
-  // Strategy 2: Guest WEB client (deciphers URLs, but validate to catch 403s on datacenter IPs)
+  // Strategy 2: TVHTML5 client with OAuth2 (backup for age-restricted / login-required videos)
+  try {
+    console.log(`[ytResolver] Trying TVHTML5 client for stream URL of ${videoId}...`);
+    const ytTv = await getTvInnertube();
+    const info = await withTimeout(ytTv.getBasicInfo(videoId), 5000, 'getBasicInfo (TVHTML5)').catch(() => null);
+    const url = await extractUrlFromInfo(info, ytTv);
+    if (url) {
+      const validUrl = await validateStreamUrl(url);
+      if (validUrl) {
+        console.log(`[ytResolver] ✅ Stream URL resolved via TVHTML5.`);
+        return validUrl;
+      }
+    }
+  } catch (err) {
+    console.warn(`[ytResolver] TVHTML5 stream extraction failed:`, err.message);
+  }
+
+  // Strategy 3: Guest WEB client (deciphers URLs, but validate to catch 403s on datacenter IPs)
   try {
     const { Innertube, Platform } = await import('youtubei.js');
     setupEvalShim(Platform);
