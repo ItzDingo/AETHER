@@ -499,6 +499,11 @@ class MusicQueue {
         updateBotPresenceAndVoiceStatus(this, song).catch(() => { });
       }, 3000);
 
+      // Delayed panel refresh to pick up async metadata enrichment (duration, release date)
+      setTimeout(() => {
+        updatePanel(this).catch(() => { });
+      }, 6000);
+
     } catch (err) {
       console.error('[playSong error]', err);
       if (err.message) console.error('[playSong error message]', err.message);

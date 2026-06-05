@@ -407,7 +407,7 @@ async function getDirectStreamUrl(videoId) {
   try {
     console.log(`[ytResolver] Trying cached Guest ANDROID client for stream URL of ${videoId}...`);
     const ytAndroid = await getAndroidInnertube();
-    const info = await withTimeout(ytAndroid.getBasicInfo(videoId), 5000, 'getBasicInfo (cached ANDROID)').catch(() => null);
+    const info = await withTimeout(ytAndroid.getBasicInfo(videoId), 4000, 'getBasicInfo (cached ANDROID)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytAndroid);
     if (url) {
       const validUrl = await validateStreamUrl(url);
@@ -424,7 +424,7 @@ async function getDirectStreamUrl(videoId) {
   try {
     console.log(`[ytResolver] Trying TVHTML5 client for stream URL of ${videoId}...`);
     const ytTv = await getTvInnertube();
-    const info = await withTimeout(ytTv.getBasicInfo(videoId), 5000, 'getBasicInfo (TVHTML5)').catch(() => null);
+    const info = await withTimeout(ytTv.getBasicInfo(videoId), 4000, 'getBasicInfo (TVHTML5)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytTv);
     if (url) {
       const validUrl = await validateStreamUrl(url);
@@ -442,8 +442,8 @@ async function getDirectStreamUrl(videoId) {
     const { Innertube, Platform } = await import('youtubei.js');
     setupEvalShim(Platform);
     console.log(`[ytResolver] Trying guest WEB client for stream URL of ${videoId}...`);
-    const ytGuestWeb = await withTimeout(Innertube.create({ client_type: 'WEB' }), 8000, 'Innertube.create (guest WEB)');
-    const info = await withTimeout(ytGuestWeb.getBasicInfo(videoId), 5000, 'getBasicInfo (guest WEB)').catch(() => null);
+    const ytGuestWeb = await withTimeout(Innertube.create({ client_type: 'WEB' }), 6000, 'Innertube.create (guest WEB)');
+    const info = await withTimeout(ytGuestWeb.getBasicInfo(videoId), 4000, 'getBasicInfo (guest WEB)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytGuestWeb);
     if (url) {
       const validUrl = await validateStreamUrl(url);
@@ -683,7 +683,7 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
   try {
     console.log(`[ytResolver] Trying ANDROID getBasicInfo for metadata of ${videoId}...`);
     const ytAndroid = await getAndroidInnertube();
-    const info = await withTimeout(ytAndroid.getBasicInfo(videoId), 10000, 'getBasicInfo (ANDROID)').catch((err) => {
+    const info = await withTimeout(ytAndroid.getBasicInfo(videoId), 5000, 'getBasicInfo (ANDROID)').catch((err) => {
       console.warn(`[ytResolver] ANDROID getBasicInfo failed for ${videoId}: ${err.message}`);
       return null;
     });
@@ -701,7 +701,7 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
   try {
     console.log(`[ytResolver] Trying WEB getBasicInfo for metadata of ${videoId}...`);
     const ytWeb = await getGuestInnertube();
-    const info = await withTimeout(ytWeb.getBasicInfo(videoId), 8000, 'getBasicInfo (WEB guest)').catch((err) => {
+    const info = await withTimeout(ytWeb.getBasicInfo(videoId), 4000, 'getBasicInfo (WEB guest)').catch((err) => {
       console.warn(`[ytResolver] WEB getBasicInfo failed for ${videoId}: ${err.message}`);
       return null;
     });
@@ -769,13 +769,81 @@ function extractSongFromSearchItem(item) {
     } catch {}
   }
 
-  // Extract duration
+  // Extract duration — MusicResponsiveListItem stores duration in several places
   let durationSec = 0;
   if (item.duration) {
     if (typeof item.duration === 'number') durationSec = item.duration;
     else if (item.duration.seconds) durationSec = item.duration.seconds;
     else if (item.duration.text) durationSec = normalizeDuration(item.duration.text);
     else if (typeof item.duration === 'string') durationSec = normalizeDuration(item.duration);
+  }
+
+  // Fallback: try to get duration from flex_columns (usually the last column has duration text)
+  if (!durationSec && item.flex_columns) {
+    try {
+      for (let i = item.flex_columns.length - 1; i >= 0; i--) {
+        const col = item.flex_columns[i];
+        const text = col?.title?.text || col?.title?.toString?.() || '';
+        // Duration looks like "3:45" or "1:02:33"
+        if (/^\d{1,2}(:\d{2}){1,2}$/.test(text.trim())) {
+          durationSec = normalizeDuration(text.trim());
+          if (durationSec > 0) {
+            console.log(`[ytResolver] Duration from flex_columns[${i}]: ${text.trim()} = ${durationSec}s`);
+            break;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // Fallback: try subtitle runs (e.g. "Song • A.L.A • 3:21")
+  if (!durationSec && item.subtitle?.runs) {
+    try {
+      for (const run of item.subtitle.runs) {
+        const text = (run?.text || '').trim();
+        if (/^\d{1,2}(:\d{2}){1,2}$/.test(text)) {
+          durationSec = normalizeDuration(text);
+          if (durationSec > 0) {
+            console.log(`[ytResolver] Duration from subtitle runs: ${text} = ${durationSec}s`);
+            break;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // Fallback: try fixed_columns (some items have duration in fixed_columns)
+  if (!durationSec && item.fixed_columns) {
+    try {
+      for (const col of item.fixed_columns) {
+        const text = col?.title?.text || col?.title?.toString?.() || '';
+        if (/^\d{1,2}(:\d{2}){1,2}$/.test(text.trim())) {
+          durationSec = normalizeDuration(text.trim());
+          if (durationSec > 0) {
+            console.log(`[ytResolver] Duration from fixed_columns: ${text.trim()} = ${durationSec}s`);
+            break;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // Extract year from subtitle (e.g. "Song • A.L.A • DIOR • 2026")
+  let releaseDate = 'Unknown';
+  if (item.subtitle?.runs) {
+    try {
+      for (const run of item.subtitle.runs) {
+        const text = (run?.text || '').trim();
+        if (/^\d{4}$/.test(text) && parseInt(text) >= 1900 && parseInt(text) <= 2100) {
+          releaseDate = text;
+          break;
+        }
+      }
+    } catch {}
+  }
+  // Also try item.year
+  if (releaseDate === 'Unknown' && item.year) {
+    releaseDate = String(item.year);
   }
 
   // Extract thumbnail
@@ -796,10 +864,10 @@ function extractSongFromSearchItem(item) {
     thumbnail,
     url,
     videoId,
-    releaseDate: 'Unknown',
+    releaseDate,
   };
 
-  console.log(`[ytResolver] Extracted from search: "${title}" by ${author} (${videoId})`);
+  console.log(`[ytResolver] Extracted from search: "${title}" by ${author} | duration: ${formatDuration(durationSec)} | released: ${releaseDate} (${videoId})`);
   return result;
 }
 
@@ -948,11 +1016,38 @@ async function resolveSong(input) {
 
   const searchResult = await searchYouTubeMusic(input);
   if (searchResult && searchResult.videoId) {
-    console.log(`[ytResolver] Search resolved video ID ${searchResult.videoId}, fetching rich metadata...`);
-    const richSong = await buildSongDataFromInnertube(searchResult.videoId, true);
-    if (richSong) {
-      return richSong;
+    // Return search result immediately for fast playback start.
+    // If the search result has incomplete metadata (no duration/releaseDate),
+    // enrich it asynchronously in the background — the panel will update later.
+    const hasDuration = searchResult.durationSec > 0;
+    const hasRelease = searchResult.releaseDate && searchResult.releaseDate !== 'Unknown';
+
+    if (!hasDuration || !hasRelease) {
+      console.log(`[ytResolver] Search result has partial metadata (duration: ${searchResult.durationSec}s, release: ${searchResult.releaseDate}). Enriching in background...`);
+      // Fire-and-forget background enrichment
+      buildSongDataFromInnertube(searchResult.videoId, true)
+        .then((richSong) => {
+          if (richSong) {
+            // Merge richer metadata into the cached song
+            if (richSong.durationSec > 0 && !hasDuration) {
+              searchResult.durationSec = richSong.durationSec;
+              searchResult.duration = richSong.duration;
+            }
+            if (richSong.releaseDate && richSong.releaseDate !== 'Unknown' && !hasRelease) {
+              searchResult.releaseDate = richSong.releaseDate;
+            }
+            // Update cache
+            cacheSong(searchResult.videoId, searchResult);
+            console.log(`[ytResolver] Background enrichment completed for ${searchResult.videoId}: duration=${searchResult.duration}, release=${searchResult.releaseDate}`);
+          }
+        })
+        .catch((err) => {
+          console.warn(`[ytResolver] Background enrichment failed for ${searchResult.videoId}:`, err.message);
+        });
     }
+
+    cacheSong(searchResult.videoId, searchResult);
+    return searchResult;
   }
 
   return searchResult;
