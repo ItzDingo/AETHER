@@ -10,7 +10,7 @@ const {
   StreamType,
 } = require('@discordjs/voice');
 const { updatePanel } = require('../utils/panelManager');
-const { getDirectStreamUrl } = require('./ytResolver');
+const { getDirectStreamUrl, getUserAgentForUrl } = require('./ytResolver');
 
 
 function getFfmpegPath() {
@@ -28,29 +28,6 @@ function getFfmpegPath() {
     }
   } catch {}
   return 'ffmpeg';
-}
-
-function getYtdlpBinary() {
-  const fs = require('fs');
-  if (fs.existsSync('/usr/local/bin/yt-dlp')) {
-    return '/usr/local/bin/yt-dlp';
-  }
-  if (fs.existsSync('/usr/bin/yt-dlp')) {
-    return '/usr/bin/yt-dlp';
-  }
-
-  try {
-    const ytdl = require('youtube-dl-exec');
-    if (
-      ytdl.constants &&
-      ytdl.constants.YOUTUBE_DL_PATH &&
-      fs.existsSync(ytdl.constants.YOUTUBE_DL_PATH)
-    ) {
-      return ytdl.constants.YOUTUBE_DL_PATH;
-    }
-  } catch {}
-
-  return 'yt-dlp';
 }
 
 
@@ -220,86 +197,6 @@ class MusicQueue {
     });
   }
 
-  async _ytdlpGetUrl(videoUrl) {
-    const path = require('path');
-    const fs = require('fs');
-    const os = require('os');
-
-    const args = [
-      '-f',
-      'bestaudio/best',
-      '--no-playlist',
-      '--no-warnings',
-      '--no-check-certificates',
-      '--user-agent',
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    ];
-
-    // Try to use cookies from environment variable or local file
-    const cookiesEnv = process.env.YOUTUBE_COOKIES;
-    let cookiesPath = null;
-
-    if (cookiesEnv && cookiesEnv.trim()) {
-      // Write cookies from env var to a temp file
-      cookiesPath = path.join(os.tmpdir(), `yt-cookies-${Date.now()}.txt`);
-      try {
-        fs.writeFileSync(cookiesPath, cookiesEnv, 'utf8');
-        const fileSize = fs.statSync(cookiesPath).size;
-        console.log(`[MusicQueue] Wrote cookies to ${cookiesPath} (${fileSize} bytes)`);
-        args.push('--cookies', cookiesPath);
-        console.log('[MusicQueue] Using cookies from YOUTUBE_COOKIES environment variable');
-      } catch (err) {
-        console.error('[MusicQueue] Failed to write cookies from env var:', err.message);
-        cookiesPath = null;
-      }
-    } else {
-      // Fallback to local cookies file
-      const localCookiesPath = path.join(__dirname, '..', '..', 'temp', 'cookies.txt');
-      if (fs.existsSync(localCookiesPath)) {
-        args.push('--cookies', localCookiesPath);
-        console.log('[MusicQueue] Using cookies from local file');
-      } else {
-        console.warn('[MusicQueue] No cookies found (YOUTUBE_COOKIES env var is empty or temp/cookies.txt missing)');
-      }
-    }
-
-    args.push('-g', videoUrl);
-
-    console.log(`[MusicQueue] Running yt-dlp with args: ${args.join(' ')}`);
-
-    const ytdlp = spawn(getYtdlpBinary(), args, {
-      windowsHide: true,
-    });
-
-    this.activeProcesses.push(ytdlp);
-
-    try {
-      const { stdout, stderr } = await waitForProcessOutput(ytdlp);
-      
-      if (stderr) {
-        console.log(`[MusicQueue] yt-dlp stderr: ${stderr.substring(0, 200)}`);
-      }
-      
-      const directUrl = stdout
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .find(Boolean);
-
-      if (!directUrl) {
-        throw new Error('yt-dlp did not return a direct audio URL.');
-      }
-
-      return directUrl;
-    } finally {
-      // Clean up temp cookies file if we created one
-      if (cookiesPath && fs.existsSync(cookiesPath)) {
-        try {
-          fs.unlinkSync(cookiesPath);
-        } catch { }
-      }
-    }
-  }
-
   async getDirectAudioUrl(videoUrl, videoId) {
     if (videoId) {
       const cached = getCachedUrl(videoId);
@@ -309,7 +206,6 @@ class MusicQueue {
       }
     }
 
-    // Try youtubei.js first (especially important if authenticated with OAuth2)
     if (videoId) {
       try {
         console.log(`[MusicQueue] Resolving direct stream URL via youtubei.js for ${videoId}...`);
@@ -319,42 +215,12 @@ class MusicQueue {
           directUrlCache.set(videoId, { url: directUrl, timestamp: Date.now() });
           return directUrl;
         }
-        console.log(`[MusicQueue] youtubei.js returned no stream URL, falling back to yt-dlp.`);
       } catch (err) {
         console.warn(`[MusicQueue] youtubei.js resolution failed for ${videoId}:`, err.message);
       }
     }
 
-    const maxAttempts = 3;
-    const delays = [0, 1000, 2000];
-    let lastError = null;
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (delays[attempt] > 0) {
-        console.log(`[MusicQueue] yt-dlp retry ${attempt + 1}/${maxAttempts} in ${delays[attempt] / 1000}s...`);
-        await new Promise(r => setTimeout(r, delays[attempt]));
-      }
-
-      try {
-        const directUrl = await this._ytdlpGetUrl(videoUrl);
-
-        if (videoId) {
-          directUrlCache.set(videoId, { url: directUrl, timestamp: Date.now() });
-        }
-        return directUrl;
-      } catch (err) {
-        lastError = err;
-        const msg = err.message || '';
-        const isBotBlock = msg.includes('Sign in to confirm') || msg.includes('not a bot');
-        console.warn(`[MusicQueue] yt-dlp attempt ${attempt + 1}/${maxAttempts} failed: ${msg.substring(0, 120)}`);
-
-        if (!isBotBlock) {
-          break;
-        }
-      }
-    }
-
-    throw lastError || new Error('Failed to resolve audio URL');
+    throw new Error('Failed to resolve audio URL via youtubei.js (no yt-dlp fallback configured)');
   }
 
   _buildFfmpegArgs(directUrl, seekTimeMs = 0) {
@@ -372,7 +238,7 @@ class MusicQueue {
       '-reconnect', '1',
       '-reconnect_streamed', '1',
       '-reconnect_delay_max', '5',
-      '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      '-user_agent', getUserAgentForUrl(directUrl),
       '-i', directUrl,
       '-vn', '-sn', '-dn'
     );

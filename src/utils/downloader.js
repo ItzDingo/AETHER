@@ -1,7 +1,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const { getDirectStreamUrl, extractVideoId } = require('./ytResolver');
+const { getDirectStreamUrl, extractVideoId, getUserAgentForUrl } = require('./ytResolver');
 
 function getFfmpegPath() {
   const fs = require('fs');
@@ -18,29 +18,6 @@ function getFfmpegPath() {
     }
   } catch {}
   return 'ffmpeg';
-}
-
-function getYtdlpBinary() {
-  const fs = require('fs');
-  if (fs.existsSync('/usr/local/bin/yt-dlp')) {
-    return '/usr/local/bin/yt-dlp';
-  }
-  if (fs.existsSync('/usr/bin/yt-dlp')) {
-    return '/usr/bin/yt-dlp';
-  }
-
-  try {
-    const ytdl = require('youtube-dl-exec');
-    if (
-      ytdl.constants &&
-      ytdl.constants.YOUTUBE_DL_PATH &&
-      fs.existsSync(ytdl.constants.YOUTUBE_DL_PATH)
-    ) {
-      return ytdl.constants.YOUTUBE_DL_PATH;
-    }
-  } catch {}
-
-  return 'yt-dlp';
 }
 
 function waitForProcessOutput(proc) {
@@ -76,97 +53,48 @@ async function downloadMp3(songUrl, songTitle) {
     }
     const outputPath = path.join(tempDir, `${safeTitle}-${Date.now()}.mp3`);
 
-    let downloadUrl = songUrl;
-    let usingDirectUrl = false;
-
+    let downloadUrl = null;
     const urlResult = extractVideoId(songUrl);
     if (urlResult) {
       try {
         console.log(`[downloader] Resolving direct stream URL via youtubei.js for ${urlResult.id}...`);
-        const directUrl = await getDirectStreamUrl(urlResult.id);
-        if (directUrl) {
-          downloadUrl = directUrl;
-          usingDirectUrl = true;
-          console.log(`[downloader] Successfully resolved stream URL via youtubei.js`);
-        } else {
-          console.log(`[downloader] youtubei.js returned no stream URL, falling back to YouTube URL.`);
-        }
+        downloadUrl = await getDirectStreamUrl(urlResult.id);
       } catch (err) {
         console.warn(`[downloader] youtubei.js resolution failed:`, err.message);
       }
     }
 
-    console.log(`[downloader] Downloading and converting to MP3: ${usingDirectUrl ? '(direct stream URL)' : songUrl}`);
+    if (!downloadUrl) {
+      console.warn(`[downloader] Failed to resolve direct stream URL for download. Failing.`);
+      return null;
+    }
+
+    console.log(`[downloader] Downloading and converting to MP3 from direct stream: ${songTitle}`);
     console.log(`[downloader] Output path: ${outputPath}`);
 
-    let success = false;
-    if (usingDirectUrl) {
-      try {
-        const ffmpegArgs = [
-          '-y',
-          '-loglevel', 'error',
-          '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-          '-i', downloadUrl,
-          '-vn',
-          '-c:a', 'libmp3lame',
-          '-q:a', '5',
-          outputPath
-        ];
-        console.log(`[downloader] Running ffmpeg directly on direct stream URL...`);
-        const ffmpegProcess = spawn(getFfmpegPath(), ffmpegArgs, {
-          windowsHide: true,
-        });
-        await waitForProcessOutput(ffmpegProcess);
-        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1024) {
-          success = true;
-          console.log(`[downloader] Direct stream ffmpeg download succeeded.`);
-        } else {
-          console.warn('[downloader] ffmpeg completed but output file is missing or too small.');
-        }
-      } catch (err) {
-        console.error(`[downloader] Direct stream ffmpeg download failed: ${err.message}. falling back to yt-dlp...`);
-      }
-    }
+    const ffmpegArgs = [
+      '-y',
+      '-loglevel', 'error',
+      '-user_agent', getUserAgentForUrl(downloadUrl),
+      '-i', downloadUrl,
+      '-vn',
+      '-c:a', 'libmp3lame',
+      '-q:a', '5',
+      outputPath
+    ];
 
-    if (!success) {
-      console.log(`[downloader] Downloading via yt-dlp: ${songUrl}`);
-      const args = [
-        '-f', 'bestaudio/best',
-        '-x',
-        '--audio-format', 'mp3',
-        '--audio-quality', '5',
-        '--ffmpeg-location', getFfmpegPath(),
-        '--user-agent',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      ];
+    console.log(`[downloader] Running ffmpeg directly on direct stream URL...`);
+    const ffmpegProcess = spawn(getFfmpegPath(), ffmpegArgs, {
+      windowsHide: true,
+    });
+    await waitForProcessOutput(ffmpegProcess);
 
-      const cookiesPath = path.join(__dirname, '..', '..', 'temp', 'cookies.txt');
-      if (fs.existsSync(cookiesPath)) {
-        console.log(`[downloader] Executing yt-dlp WITH cookies from: ${cookiesPath}`);
-        args.push('--cookies', cookiesPath);
-      } else {
-        console.warn('[downloader] WARNING: cookies.txt not found! Executing yt-dlp WITHOUT cookies.');
-      }
-
-      args.push(
-        '-o', outputPath,
-        '--no-playlist',
-        '--no-warnings',
-        '--no-check-certificates',
-        songUrl
-      );
-
-      const ytdlp = spawn(getYtdlpBinary(), args, {
-        windowsHide: true,
-      });
-
-      await waitForProcessOutput(ytdlp);
-    }
-
-    if (fs.existsSync(outputPath)) {
+    if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1024) {
+      console.log(`[downloader] Direct stream ffmpeg download succeeded.`);
       return outputPath;
     }
 
+    console.warn('[downloader] ffmpeg completed but output file is missing or too small.');
     return null;
   } catch (err) {
     console.error('[downloader] Error downloading MP3:', err.message);

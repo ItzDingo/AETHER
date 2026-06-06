@@ -7,6 +7,21 @@ const http = require('http');
  * Returns the URL if it responds with 2xx/3xx, or null if 403/etc.
  * This prevents returning URLs that look valid but get blocked by YouTube's CDN on datacenter IPs.
  */
+function getUserAgentForUrl(url) {
+  if (!url) return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+  try {
+    const urlObj = new URL(url);
+    const client = urlObj.searchParams.get('c');
+    if (client === 'ANDROID') {
+      return 'com.google.android.youtube/19.12.35 (Linux; U; Android 11) gzip';
+    }
+    if (client === 'TVHTML5') {
+      return 'Mozilla/5.0 (Chromecast; Playback) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+    }
+  } catch {}
+  return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+}
+
 async function validateStreamUrl(url) {
   if (!url) return null;
   return new Promise((resolve) => {
@@ -20,7 +35,7 @@ async function validateStreamUrl(url) {
       method: 'HEAD',
       timeout: 4000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+        'User-Agent': getUserAgentForUrl(url)
       }
     };
 
@@ -95,53 +110,6 @@ function withTimeout(promise, ms, label = 'operation') {
       setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
     ),
   ]);
-}
-
-function getYtdlpBinary() {
-  const fs = require('fs');
-  if (fs.existsSync('/usr/local/bin/yt-dlp')) {
-    return '/usr/local/bin/yt-dlp';
-  }
-  if (fs.existsSync('/usr/bin/yt-dlp')) {
-    return '/usr/bin/yt-dlp';
-  }
-
-  try {
-    const ytdl = require('youtube-dl-exec');
-    if (
-      ytdl.constants &&
-      ytdl.constants.YOUTUBE_DL_PATH &&
-      fs.existsSync(ytdl.constants.YOUTUBE_DL_PATH)
-    ) {
-      return ytdl.constants.YOUTUBE_DL_PATH;
-    }
-  } catch {}
-
-  return 'yt-dlp';
-}
-
-function waitForProcessOutput(proc) {
-  return new Promise((resolve, reject) => {
-    let stdout = '';
-    let stderr = '';
-
-    proc.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    proc.once('error', reject);
-    proc.once('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(stderr.trim() || `Process exited with code ${code}`));
-        return;
-      }
-      resolve({ stdout, stderr, code });
-    });
-  });
 }
 
 function formatReleaseDate(dateStr) {
@@ -616,81 +584,6 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
     };
   };
 
-  async function resolveWithYtdlp(videoId) {
-  try {
-    console.log(`[ytResolver] Trying yt-dlp metadata fallback for ${videoId}...`);
-    const path = require('path');
-    const fs = require('fs');
-    const { spawn } = require('child_process');
-    const url = `https://www.youtube.com/watch?v=${videoId}`;
-    const binary = getYtdlpBinary();
-
-    const args = [
-      '--dump-json',
-      '--no-playlist',
-      '--no-warnings',
-      '--no-check-certificates',
-    ];
-
-    // Try to use cookies from env or file
-    const cookiesEnv = process.env.YOUTUBE_COOKIES;
-    let tempCookiesPath = null;
-
-    if (cookiesEnv && cookiesEnv.trim()) {
-      const os = require('os');
-      tempCookiesPath = path.join(os.tmpdir(), `yt-metadata-cookies-${Date.now()}.txt`);
-      try {
-        fs.writeFileSync(tempCookiesPath, cookiesEnv, 'utf8');
-        args.push('--cookies', tempCookiesPath);
-      } catch (err) {
-        console.error('[ytResolver] Failed to write temp cookies for metadata:', err.message);
-        tempCookiesPath = null;
-      }
-    } else {
-      const localCookiesPath = path.join(__dirname, '..', '..', 'temp', 'cookies.txt');
-      if (fs.existsSync(localCookiesPath)) {
-        args.push('--cookies', localCookiesPath);
-      }
-    }
-
-    args.push(url);
-
-    const proc = spawn(binary, args, { windowsHide: true });
-    const { stdout } = await withTimeout(waitForProcessOutput(proc), 12000, 'yt-dlp metadata process');
-    
-    // Clean up temp cookies if created
-    if (tempCookiesPath && fs.existsSync(tempCookiesPath)) {
-      try { fs.unlinkSync(tempCookiesPath); } catch {}
-    }
-
-    const meta = JSON.parse(stdout);
-    if (meta && meta.title) {
-      let parsedReleaseDate = 'Unknown';
-      const rawDate = meta.release_date || meta.upload_date;
-      if (rawDate && rawDate.length === 8) {
-        parsedReleaseDate = `${rawDate.substring(0, 4)},${rawDate.substring(4, 6)},${rawDate.substring(6, 8)}`;
-      }
-
-      const song = {
-        title: meta.title,
-        author: meta.uploader || meta.artist || 'Unknown Artist',
-        duration: formatDuration(meta.duration || 0),
-        durationSec: meta.duration || 0,
-        thumbnail: meta.thumbnail || null,
-        url: url,
-        videoId: videoId,
-        releaseDate: formatReleaseDate(parsedReleaseDate),
-      };
-      console.log(`[ytResolver] yt-dlp metadata resolved: "${song.title}" by ${song.author} (${song.duration})`);
-      cacheSong(videoId, song);
-      return song;
-    }
-  } catch (err) {
-    console.warn(`[ytResolver] yt-dlp metadata fallback failed for ${videoId}:`, err.message);
-  }
-  return null;
-}
-
 // Strategy 1: ANDROID client getBasicInfo (most reliable on datacenter IPs)
   try {
     console.log(`[ytResolver] Trying ANDROID getBasicInfo for metadata of ${videoId}...`);
@@ -726,19 +619,6 @@ async function buildSongDataFromInnertube(videoId, preferMusic = false) {
   } catch (err) {
     console.warn(`[ytResolver] WEB metadata attempt failed for ${videoId}:`, err.message);
   }
-
-  // Strategy 3: yt-dlp metadata extraction fallback
-  try {
-    const ytdlResult = await resolveWithYtdlp(videoId);
-    if (ytdlResult) return ytdlResult;
-  } catch (err) {
-    console.warn(`[ytResolver] yt-dlp metadata attempt failed for ${videoId}:`, err.message);
-  }
-
-  // Strategy 4: yt-search (independent package, doesn't use youtubei.js)
-  console.log(`[ytResolver] youtubei.js metadata failed for ${videoId}, trying yt-search...`);
-  const ytSearchResult = await resolveWithYtSearch(videoId);
-  if (ytSearchResult) return ytSearchResult;
 
   console.log(`[ytResolver] All metadata resolution methods failed for ${videoId}`);
   return null;
@@ -878,40 +758,6 @@ function extractSongFromSearchItem(item) {
 
 }
 
-/**
- * Fallback: use yt-search package to get video metadata by ID.
- * Works independently of youtubei.js.
- */
-async function resolveWithYtSearch(videoId) {
-  try {
-    const ytSearch = require('yt-search');
-    console.log(`[ytResolver] Trying yt-search fallback for ${videoId}...`);
-    const result = await withTimeout(
-      ytSearch({ videoId }),
-      10000,
-      'yt-search'
-    );
-    if (result && result.title) {
-      const song = {
-        title: result.title,
-        author: result.author?.name || result.author || 'Unknown Artist',
-        duration: result.timestamp || formatDuration(result.seconds || 0),
-        durationSec: result.seconds || 0,
-        thumbnail: result.thumbnail || result.image || null,
-        url: result.url || `https://www.youtube.com/watch?v=${videoId}`,
-        videoId,
-        releaseDate: result.ago || 'Unknown',
-      };
-      console.log(`[ytResolver] yt-search resolved: "${song.title}" by ${song.author}`);
-      cacheSong(videoId, song);
-      return song;
-    }
-  } catch (err) {
-    console.warn(`[ytResolver] yt-search fallback failed for ${videoId}:`, err?.message || err);
-  }
-  return null;
-}
-
 async function searchYouTubeMusic(query) {
   const searchWithInstance = async (ytInstance) => {
     console.log(`[ytResolver] Searching YouTube Music for: "${query}"`);
@@ -959,43 +805,11 @@ async function searchYouTubeMusic(query) {
         const song = await buildSongDataFromInnertube(item.id, true);
         if (song) return song;
       }
-
-      // Last resort from YTMusic results: try yt-search with the first video ID
-      const firstId = items.find((i) => i.id)?.id;
-      if (firstId) {
-        const song = await resolveWithYtSearch(firstId);
-        if (song) return song;
-      }
     } else {
       console.log(`[ytResolver] No matching songs/videos found on YouTube Music for "${query}"`);
     }
   } catch (err) {
     console.error('[ytResolver] YouTube Music search error:', err.message || err);
-  }
-
-  // Strategy 2: yt-search text search (completely independent, works even when YTMusic fails)
-  try {
-    const ytSearch = require('yt-search');
-    console.log(`[ytResolver] Falling back to yt-search text search for: "${query}"`);
-    const searchResult = await withTimeout(ytSearch(query), 10000, 'yt-search text');
-    if (searchResult && searchResult.videos && searchResult.videos.length > 0) {
-      const v = searchResult.videos[0];
-      const song = {
-        title: v.title,
-        author: v.author?.name || v.author || 'Unknown Artist',
-        duration: v.timestamp || formatDuration(v.seconds || 0),
-        durationSec: v.seconds || 0,
-        thumbnail: v.thumbnail || v.image || null,
-        url: v.url,
-        videoId: v.videoId,
-        releaseDate: v.ago || 'Unknown',
-      };
-      console.log(`[ytResolver] yt-search text search resolved: "${song.title}" by ${song.author}`);
-      cacheSong(song.videoId, song);
-      return song;
-    }
-  } catch (ytErr) {
-    console.error('[ytResolver] yt-search text search also failed:', ytErr?.message || ytErr);
   }
 
   return null;
@@ -1013,12 +827,23 @@ async function resolveSong(input) {
       return cached;
     }
 
-    // buildSongDataFromInnertube now internally tries ANDROID → WEB → yt-dlp → yt-search
+    // buildSongDataFromInnertube now internally tries ANDROID → WEB
     const song = await buildSongDataFromInnertube(id, true);
     if (song) return song;
 
-    console.log(`[ytResolver] All resolution methods failed for video ID ${id}. Rejecting.`);
-    return null;
+    console.warn(`[ytResolver] All metadata resolution methods failed for video ID ${id}. Returning fallback song object.`);
+    const fallbackSong = {
+      title: 'YouTube Audio Link',
+      author: 'YouTube',
+      duration: '0:00',
+      durationSec: 0,
+      thumbnail: null,
+      url: `https://www.youtube.com/watch?v=${id}`,
+      videoId: id,
+      releaseDate: 'Unknown'
+    };
+    cacheSong(id, fallbackSong);
+    return fallbackSong;
   }
 
   const searchResult = await searchYouTubeMusic(input);
@@ -1058,4 +883,4 @@ async function resolveSong(input) {
   return searchResult;
 }
 
-module.exports = { resolveSong, formatDuration, getDirectStreamUrl, getInnertube, getAndroidInnertube, getTvInnertube, extractVideoId };
+module.exports = { resolveSong, formatDuration, getDirectStreamUrl, getInnertube, getAndroidInnertube, getTvInnertube, extractVideoId, getUserAgentForUrl };
