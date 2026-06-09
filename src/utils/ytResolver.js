@@ -32,10 +32,11 @@ async function validateStreamUrl(url) {
     
     const mod = url.startsWith('https') ? https : http;
     const options = {
-      method: 'HEAD',
+      method: 'GET',
       timeout: 4000,
       headers: {
-        'User-Agent': getUserAgentForUrl(url)
+        'User-Agent': getUserAgentForUrl(url),
+        'Range': 'bytes=0-1'
       }
     };
 
@@ -382,6 +383,10 @@ async function extractUrlFromInfo(info, ytInstance) {
 }
 
 async function getDirectStreamUrl(videoId) {
+  let androidUrl = null;
+  let tvUrl = null;
+  let webUrl = null;
+
   // Strategy 1: Reuse cached Guest ANDROID instance (fastest & highly reliable)
   // ANDROID provides direct (unciphered) URLs that work from datacenter IPs.
   try {
@@ -390,6 +395,7 @@ async function getDirectStreamUrl(videoId) {
     const info = await withTimeout(ytAndroid.getBasicInfo(videoId), 4000, 'getBasicInfo (cached ANDROID)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytAndroid);
     if (url) {
+      androidUrl = url;
       const validUrl = await validateStreamUrl(url);
       if (validUrl) {
         console.log(`[ytResolver] ✅ Stream URL resolved via cached Guest ANDROID.`);
@@ -407,6 +413,7 @@ async function getDirectStreamUrl(videoId) {
     const info = await withTimeout(ytTv.getBasicInfo(videoId), 4000, 'getBasicInfo (TVHTML5)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytTv);
     if (url) {
+      tvUrl = url;
       const validUrl = await validateStreamUrl(url);
       if (validUrl) {
         console.log(`[ytResolver] ✅ Stream URL resolved via TVHTML5.`);
@@ -426,6 +433,7 @@ async function getDirectStreamUrl(videoId) {
     const info = await withTimeout(ytGuestWeb.getBasicInfo(videoId), 4000, 'getBasicInfo (guest WEB)').catch(() => null);
     const url = await extractUrlFromInfo(info, ytGuestWeb);
     if (url) {
+      webUrl = url;
       const validUrl = await validateStreamUrl(url);
       if (validUrl) {
         console.log(`[ytResolver] ✅ Stream URL resolved via guest WEB.`);
@@ -436,7 +444,14 @@ async function getDirectStreamUrl(videoId) {
     console.warn(`[ytResolver] Guest WEB stream extraction failed:`, err.message);
   }
 
-  console.warn(`[ytResolver] ⚠️ All youtubei.js strategies failed for ${videoId}. Falling back to yt-dlp.`);
+  // Fallback: if all validations failed but we resolved at least one URL, use it as a fallback
+  const fallbackUrl = androidUrl || tvUrl || webUrl;
+  if (fallbackUrl) {
+    console.warn(`[ytResolver] ⚠️ All stream URLs failed validation (HTTP 403/etc.), but returning unvalidated fallback URL to try anyway.`);
+    return fallbackUrl;
+  }
+
+  console.warn(`[ytResolver] ⚠️ All youtubei.js strategies failed for ${videoId}. No stream URL found.`);
   return null;
 }
 
